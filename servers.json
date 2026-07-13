@@ -1,0 +1,12 @@
+{
+  "servers": [
+    {
+      "name": "My PHP App",
+      "directory": "/home/username/Dokumente/GitHub/AeroPHP84",
+      "command": "/usr/bin/php8.5 -S localhost:{port} -t public/ public/index.php",
+      "port": 8001,
+      "env": {},
+      "autostart": false
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DevServer Commander
+Comment=Start, stop and restart local development servers
+Icon=devserver-commander.png
+Exec=python3 devserver_commander.py
+Terminal=false
+Categories=Utility;Development;
+StartupNotify=false
