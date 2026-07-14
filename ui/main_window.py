@@ -62,6 +62,10 @@ class MainWindow(tk.Tk):
         self._autostart_vars: Dict[str, tk.BooleanVar] = {}
         self._autostart_checkbuttons: Dict[str, tk.Checkbutton] = {}
         self._syncing_autostart_widgets = False
+        self._drag_source_name: Optional[str] = None
+        self._drag_start_y: int = 0
+        self._drag_active = False
+        self._drop_indicator_index: Optional[int] = None
 
         self._build_menu()
         self._build_widgets()
@@ -136,6 +140,8 @@ class MainWindow(tk.Tk):
             "memory",
         )
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="tree headings", height=10)
+        self.drop_indicator = tk.Frame(self.tree, height=2, background="#22c55e")
+        self.drop_indicator.place_forget()
         self.tree.heading("#0", text="Name")
         self.tree.heading("type", text="Type")
         self.tree.heading("port", text="Port")
@@ -156,6 +162,9 @@ class MainWindow(tk.Tk):
         self.tree.bind("<Down>", self._on_tree_arrow_key)
         self.tree.bind("<Button-1>", self._on_tree_focus, add="+")
         self.tree.bind("<Button-3>", self._on_tree_context_menu)
+        self.tree.bind("<ButtonPress-1>", self._on_tree_drag_start, add="+")
+        self.tree.bind("<B1-Motion>", self._on_tree_drag_motion, add="+")
+        self.tree.bind("<ButtonRelease-1>", self._on_tree_drag_release, add="+")
         self.tree.bind("<Configure>", self._position_autostart_widgets, add="+")
         self.tree.bind("<Expose>", self._position_autostart_widgets, add="+")
         self.bind("<Up>", self._on_tree_arrow_key)
@@ -351,6 +360,7 @@ class MainWindow(tk.Tk):
     def _set_tree_yscroll(self, first: str, last: str) -> None:
         self._tree_vscrollbar.set(first, last)
         self._position_autostart_widgets()
+        self._update_drop_indicator_position()
 
     def _on_tree_yscroll(self, *args) -> None:
         self.tree.yview(*args)
@@ -359,6 +369,7 @@ class MainWindow(tk.Tk):
     def _set_tree_xscroll(self, first: str, last: str) -> None:
         self._tree_hscrollbar.set(first, last)
         self._position_autostart_widgets()
+        self._update_drop_indicator_position()
 
     def _on_tree_xscroll(self, *args) -> None:
         self.tree.xview(*args)
@@ -479,6 +490,7 @@ class MainWindow(tk.Tk):
                 width=checkbox_width,
                 height=checkbox_height,
             )
+        self._update_drop_indicator_position()
 
     def _on_autostart_checkbox_toggle(self, name: str) -> None:
         """
@@ -548,6 +560,174 @@ class MainWindow(tk.Tk):
 
     def _on_tree_focus(self, _event=None) -> None:
         self.tree.focus_set()
+
+    def _on_tree_drag_start(self, event) -> None:
+        """
+        Initialize a potential drag-and-drop reorder operation.
+
+        :param event: Tkinter mouse event from the tree view
+        """
+        if self._refreshing_tree:
+            return
+
+        row_id = self.tree.identify_row(event.y)
+        self._drag_source_name = row_id if row_id else None
+        self._drag_start_y = event.y
+        self._drag_active = False
+        self._hide_drop_indicator()
+
+    def _on_tree_drag_motion(self, event) -> None:
+        """
+        Mark drag operation as active after slight mouse movement.
+
+        :param event: Tkinter mouse event from the tree view
+        """
+        if not self._drag_source_name:
+            return
+
+        if self._drag_active:
+            self._show_drop_indicator(self._drop_index_for_y(event.y))
+            return
+
+        if abs(event.y - self._drag_start_y) < 4:
+            self._hide_drop_indicator()
+            return
+
+        self._drag_active = True
+        self.tree.configure(cursor="fleur")
+        self._show_drop_indicator(self._drop_index_for_y(event.y))
+
+    def _drop_index_for_y(self, y: int) -> int:
+        """
+        Calculate insertion index for a drop position in the tree view.
+
+        :param y: Mouse y-coordinate relative to the tree widget
+        :return: Target insertion index in the current tree order
+        """
+        items = list(self.tree.get_children())
+        if not items:
+            return 0
+
+        row_id = self.tree.identify_row(y)
+        if row_id:
+            bbox = self.tree.bbox(row_id)
+            target_index = items.index(row_id)
+            if bbox:
+                _x, row_y, _width, row_height = bbox
+                if y > row_y + (row_height // 2):
+                    target_index += 1
+            return target_index
+
+        first_bbox = self.tree.bbox(items[0])
+        if first_bbox and y < first_bbox[1]:
+            return 0
+
+        return len(items)
+
+    def _show_drop_indicator(self, target_index: int) -> None:
+        """
+        Show a horizontal insertion line for the current drag target.
+
+        :param target_index: Insertion index represented by the line
+        """
+        self._drop_indicator_index = target_index
+        self._update_drop_indicator_position()
+
+    def _update_drop_indicator_position(self) -> None:
+        """Recalculate and place the insertion line for the active drag target."""
+        if self._drop_indicator_index is None:
+            self.drop_indicator.place_forget()
+            return
+
+        items = list(self.tree.get_children())
+        if not items:
+            self.drop_indicator.place_forget()
+            return
+
+        target_index = max(0, min(self._drop_indicator_index, len(items)))
+        y_position: Optional[int] = None
+
+        if target_index < len(items):
+            target_bbox = self.tree.bbox(items[target_index])
+            if target_bbox:
+                _x, y_position, _width, _height = target_bbox
+        else:
+            last_bbox = self.tree.bbox(items[-1])
+            if last_bbox:
+                _x, last_y, _width, last_height = last_bbox
+                y_position = last_y + last_height
+
+        if y_position is None:
+            self.drop_indicator.place_forget()
+            return
+
+        line_width = max(self.tree.winfo_width() - 2, 1)
+        self.drop_indicator.place(in_=self.tree, x=1, y=max(y_position - 1, 0), width=line_width, height=2)
+        self.drop_indicator.lift()
+
+    def _hide_drop_indicator(self) -> None:
+        """Hide and reset the drag-and-drop insertion line."""
+        self._drop_indicator_index = None
+        self.drop_indicator.place_forget()
+
+    def _reorder_project(self, source_name: str, target_index: int) -> bool:
+        """
+        Move a project within the list and keep process mapping in sync.
+
+        :param source_name: Name of the dragged project
+        :param target_index: Requested insertion index in current order
+        :return: True when order changed, otherwise False
+        """
+        names = [project.name for project in self.projects]
+        if source_name not in names:
+            return False
+
+        source_index = names.index(source_name)
+        normalized_target_index = max(0, min(target_index, len(self.projects)))
+        if normalized_target_index > source_index:
+            normalized_target_index -= 1
+
+        if normalized_target_index == source_index:
+            return False
+
+        moved_project = self.projects.pop(source_index)
+        self.projects.insert(normalized_target_index, moved_project)
+
+        self.processes = {
+            project.name: self.processes[project.name]
+            for project in self.projects
+            if project.name in self.processes
+        }
+        return True
+
+    def _on_tree_drag_release(self, event) -> None:
+        """
+        Finalize drag-and-drop reorder and persist updated server order.
+
+        :param event: Tkinter mouse event from the tree view
+        """
+        source_name = self._drag_source_name
+        drag_active = self._drag_active
+
+        self._drag_source_name = None
+        self._drag_active = False
+        self.tree.configure(cursor="")
+        self._hide_drop_indicator()
+
+        if not source_name or not drag_active:
+            return
+
+        target_index = self._drop_index_for_y(event.y)
+        if not self._reorder_project(source_name, target_index):
+            return
+
+        self._save()
+        self._refresh_tree()
+        if self.tree.exists(source_name):
+            self.tree.selection_set(source_name)
+            self.tree.focus(source_name)
+            self.tree.see(source_name)
+        self._set_status(f"Moved '{source_name}' and saved server order.")
 
     def _on_tree_context_menu(self, event) -> None:
         row_id = self.tree.identify_row(event.y)
