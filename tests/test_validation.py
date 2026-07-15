@@ -19,6 +19,7 @@ from services.php import (
     format_docroot_for_display,
     is_working_directory_docroot,
 )
+from services.project_detection import detect_project_settings
 
 
 class UniqueProjectPortTests(unittest.TestCase):
@@ -150,6 +151,67 @@ class ValidationTests(unittest.TestCase):
                 "",
             )
             self.assertIsNone(error)
+
+
+class ProjectDetectionTests(unittest.TestCase):
+    """Tests for automatic Add-dialog project detection."""
+
+    def test_detects_joomla_subfolder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "joomla").mkdir()
+            detected = detect_project_settings(str(root))
+            self.assertIsNotNone(detected)
+            self.assertEqual(detected.server_type, "php")
+            self.assertEqual(detected.directory, str(root / "joomla"))
+            self.assertEqual(detected.docroot, "/")
+            self.assertEqual(detected.router, "")
+
+    def test_detects_public_docroot_and_router(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            public_dir = root / "public"
+            public_dir.mkdir()
+            (public_dir / "router.php").write_text("<?php", encoding="utf-8")
+            detected = detect_project_settings(str(root))
+            self.assertIsNotNone(detected)
+            self.assertEqual(detected.server_type, "php")
+            self.assertEqual(detected.directory, str(root))
+            self.assertEqual(detected.docroot, "public/")
+            self.assertEqual(detected.router, "public/router.php")
+
+    def test_detects_node_package_json_dev_script(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "package.json").write_text(
+                '{"scripts": {"dev": "vite", "test": "vitest"}}',
+                encoding="utf-8",
+            )
+            detected = detect_project_settings(str(root))
+            self.assertIsNotNone(detected)
+            self.assertEqual(detected.server_type, "node")
+            self.assertEqual(detected.node_mode, "npm")
+            self.assertEqual(detected.node_target, "dev")
+            self.assertEqual(detected.suggested_port, 5173)
+
+    def test_detects_django_manage_py(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "manage.py").write_text("print('django')", encoding="utf-8")
+            detected = detect_project_settings(str(root))
+            self.assertIsNotNone(detected)
+            self.assertEqual(detected.server_type, "custom")
+            self.assertEqual(
+                detected.command,
+                "python3 manage.py runserver localhost:{port}",
+            )
+            self.assertEqual(detected.suggested_port, 8000)
+
+    def test_returns_none_when_no_known_layout_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            detected = detect_project_settings(str(root))
+            self.assertIsNone(detected)
 
 
 if __name__ == "__main__":

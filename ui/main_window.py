@@ -887,6 +887,7 @@ class MainWindow(tk.Tk):
         self.projects.append(dialog.result)
         self.processes[dialog.result.name] = ServerProcess(dialog.result)
         self._save()
+        self._start_project(dialog.result.name)
         self._refresh_tree()
 
     def _edit_project(self) -> None:

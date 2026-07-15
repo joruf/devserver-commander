@@ -2,10 +2,11 @@
 
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Dict, List, Optional, Tuple
 
-from config.presets import DEFAULT_PRESET_LABEL, find_preset, preset_labels
+from config.presets import find_preset, preset_labels
 from config.validation import make_unique_project_name, make_unique_project_port, validate_server_setup
 from models import ServerProject
 from services.dev_tools import (
@@ -32,6 +33,7 @@ from services.php import (
     format_docroot_for_display,
     install_php_version,
 )
+from services.project_detection import ProjectDetectionResult, detect_project_settings
 from services.process import format_launch_command
 from services.server_types import detect_server_type, server_type_label
 from ui.directory_picker import ask_directory
@@ -63,6 +65,7 @@ class ProjectDialog(tk.Toplevel):
         self._php_versions: List[Tuple[str, str]] = []
         self._updating_command = False
         self._applying_preset = False
+        self._auto_detected_config_applied = False
 
         self.title("Edit Project" if self._editing else "Add Project")
         self.transient(parent)
@@ -91,18 +94,54 @@ class ProjectDialog(tk.Toplevel):
         initial_type = server_type_label(initial_type_key)
         use_php = initial_type_key == "php"
         use_node = initial_type_key == "node"
+        self.show_hidden_var = tk.BooleanVar(value=False)
 
         row = 0
         if not self._editing:
-            ttk.Label(frame, text="Template:").grid(row=row, column=0, sticky="w", **pad)
-            self.preset_var = tk.StringVar(value=DEFAULT_PRESET_LABEL)
+            self.path_frame = ttk.Frame(frame)
+            self.path_frame.grid(row=row, column=0, columnspan=3, sticky="we")
+            ttk.Label(self.path_frame, text="Project main path:").grid(row=0, column=0, sticky="w", **pad)
+            self.main_path_var = tk.StringVar()
+            ttk.Entry(self.path_frame, textvariable=self.main_path_var, width=40).grid(
+                row=0, column=1, sticky="we", **pad
+            )
+            ttk.Button(
+                self.path_frame,
+                text="Browse...",
+                command=self._browse_main_path,
+            ).grid(row=0, column=2, **pad)
+            ttk.Button(
+                self.path_frame,
+                text="Auto Detect",
+                command=self._detect_from_main_path,
+            ).grid(row=0, column=3, **pad)
+            self.path_frame.columnconfigure(1, weight=1)
+
+            row += 1
+            self.detect_status_var = tk.StringVar(
+                value="Select the project main path, then run auto detection."
+            )
+            ttk.Label(frame, textvariable=self.detect_status_var, foreground="gray").grid(
+                row=row,
+                column=0,
+                columnspan=3,
+                sticky="w",
+                **pad,
+            )
+            row += 1
+
+            self.template_frame = ttk.Frame(frame)
+            self.template_frame.grid(row=row, column=0, columnspan=3, sticky="we")
+            ttk.Label(self.template_frame, text="Template:").grid(row=0, column=0, sticky="w", **pad)
+            self.preset_var = tk.StringVar(value="(none)")
             ttk.OptionMenu(
-                frame,
+                self.template_frame,
                 self.preset_var,
-                DEFAULT_PRESET_LABEL,
+                "(none)",
                 *preset_labels(),
                 command=self._on_preset_changed,
-            ).grid(row=row, column=1, sticky="we", **pad)
+            ).grid(row=0, column=1, sticky="we", **pad)
+            self.template_frame.columnconfigure(1, weight=1)
             row += 1
 
         self.project_details_frame = ttk.Frame(frame)
@@ -123,7 +162,6 @@ class ProjectDialog(tk.Toplevel):
         ttk.Button(details, text="Browse...", command=self._browse_directory).grid(row=details_row, column=2, **pad)
 
         details_row += 1
-        self.show_hidden_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             details,
             text="Show hidden files/folders when browsing",
@@ -348,9 +386,122 @@ class ProjectDialog(tk.Toplevel):
         self._update_command_preview()
         self._update_dev_tool_controls()
         if not self._editing:
-            self._on_preset_changed(DEFAULT_PRESET_LABEL)
+            self._set_template_visibility(False)
+            self.project_details_frame.grid_remove()
+            self.btn_save.pack_forget()
         else:
             self.btn_save.pack(side="left", padx=4, before=self.btn_cancel)
+
+    def _set_template_visibility(self, visible: bool) -> None:
+        """
+        Show or hide the template selection row in add mode.
+
+        :param visible: True to show the template row, False to hide it
+        """
+        if self._editing:
+            return
+        if visible:
+            self.template_frame.grid()
+        else:
+            self.template_frame.grid_remove()
+
+    def _browse_main_path(self) -> None:
+        """Select a main project path and trigger auto detection."""
+        chosen = ask_directory(
+            parent=self,
+            initialdir=self.main_path_var.get() or ".",
+            show_hidden=self.show_hidden_var.get(),
+        )
+        if not chosen:
+            return
+        self.main_path_var.set(chosen)
+        self._detect_from_main_path()
+
+    def _apply_detected_project_settings(self, detected: ProjectDetectionResult) -> None:
+        """
+        Apply detected project settings to the add form.
+
+        :param detected: Detected project settings
+        """
+        self._auto_detected_config_applied = True
+        self._set_template_visibility(False)
+        self.project_details_frame.grid()
+        if not self.btn_save.winfo_ismapped():
+            self.btn_save.pack(side="left", padx=4, before=self.btn_cancel)
+
+        self.server_type_var.set(server_type_label(detected.server_type))
+        self.directory_var.set(detected.directory)
+        if detected.server_type == "php":
+            self.docroot_var.set(detected.docroot)
+            self.router_var.set(detected.router)
+            self.custom_command_var.set("")
+        elif detected.server_type == "node":
+            node_mode_label = next(
+                (label for label, key in NODE_MODES.items() if key == detected.node_mode),
+                "npm run",
+            )
+            self.node_mode_var.set(node_mode_label)
+            self.node_target_var.set(detected.node_target)
+            self.node_port_env_var.set(detected.use_port_env)
+            self.custom_command_var.set("")
+        else:
+            self.custom_command_var.set(detected.command)
+            self.docroot_var.set("public/")
+            self.router_var.set("")
+
+        if not self.name_var.get().strip():
+            self.name_var.set(
+                make_unique_project_name(self._existing_projects, detected.suggested_name)
+            )
+        if detected.suggested_port is not None and not self.port_var.get().strip():
+            self.port_var.set(
+                str(make_unique_project_port(self._existing_projects, detected.suggested_port))
+            )
+
+        self._update_server_type_visibility()
+        self._update_command_preview()
+        self._update_dev_tool_controls()
+        if detected.validation_error:
+            self.detect_status_var.set(
+                f"Detected {detected.detected_layout}, but validation failed: {detected.validation_error}"
+            )
+        else:
+            self.detect_status_var.set(
+                f"Detected {detected.detected_layout}. Configuration validation passed."
+            )
+
+    def _detect_from_main_path(self) -> None:
+        """Run automatic project detection for the selected main path."""
+        main_path = self.main_path_var.get().strip()
+        if not main_path:
+            self.detect_status_var.set("Enter a project main path to run auto detection.")
+            self._auto_detected_config_applied = False
+            self._set_template_visibility(False)
+            self.project_details_frame.grid_remove()
+            self.btn_save.pack_forget()
+            return
+
+        if not Path(main_path).expanduser().is_dir():
+            self.detect_status_var.set("The selected main path does not exist.")
+            self._auto_detected_config_applied = False
+            self._set_template_visibility(False)
+            self.project_details_frame.grid_remove()
+            self.btn_save.pack_forget()
+            return
+
+        detected = detect_project_settings(main_path)
+        if detected is None:
+            self._auto_detected_config_applied = False
+            self.detect_status_var.set(
+                "No automatic settings found. Please choose a template."
+            )
+            self.preset_var.set("(none)")
+            self._set_template_visibility(True)
+            self._update_preset_visibility("(none)")
+            self.directory_var.set(main_path)
+            return
+
+        self._apply_detected_project_settings(detected)
 
     def _clear_form_fields(self) -> None:
         """Reset project form fields after the template selection is cleared."""
@@ -390,6 +541,7 @@ class ProjectDialog(tk.Toplevel):
 
     def _on_preset_changed(self, choice: str) -> None:
         if not self._editing:
+            self._auto_detected_config_applied = False
             self._update_preset_visibility(choice)
 
         preset = find_preset(choice)
@@ -407,6 +559,12 @@ class ProjectDialog(tk.Toplevel):
                 self.port_var.set(
                     str(make_unique_project_port(self._existing_projects, preset.port))
                 )
+            if (
+                not self._editing
+                and self.main_path_var.get().strip()
+                and not self.directory_var.get().strip()
+            ):
+                self.directory_var.set(self.main_path_var.get().strip())
             if preset.directory_hint and not self.directory_var.get().strip():
                 self.directory_var.set(preset.directory_hint)
 
@@ -445,6 +603,26 @@ class ProjectDialog(tk.Toplevel):
         normalized = format_docroot_for_display(self.docroot_var.get())
         if normalized != self.docroot_var.get():
             self.docroot_var.set(normalized)
+
+    def _sync_php_fields_before_save(self) -> None:
+        """
+        Synchronize PHP form fields before building the final command.
+
+        This ensures values entered in the dialog are persisted even when the
+        document-root entry did not emit a focus-out event before Save.
+        """
+        if self._current_server_type() != "php":
+            return
+
+        # Read directly from the entry widget to avoid stale values while focus
+        # is still inside the input field.
+        docroot_value = format_docroot_for_display(self.docroot_entry.get())
+        if docroot_value != self.docroot_var.get():
+            self.docroot_var.set(docroot_value)
+
+        router_value = self.router_var.get().strip()
+        if router_value != self.router_var.get():
+            self.router_var.set(router_value)
 
     def _current_dev_tool_id(self) -> Optional[str]:
         if not self._editing:
@@ -747,13 +925,19 @@ class ProjectDialog(tk.Toplevel):
         return {}
 
     def _on_save(self) -> None:
-        if not self._editing and self.preset_var.get() == "(none)":
+        if (
+            not self._editing
+            and not self._auto_detected_config_applied
+            and self.preset_var.get() == "(none)"
+        ):
             messagebox.showerror(
                 "Template Required",
-                "Please choose a template before saving the project.",
+                "Please run auto detection or choose a template before saving the project.",
                 parent=self,
             )
             return
+
+        self._sync_php_fields_before_save()
 
         name = self.name_var.get().strip()
         directory = self.directory_var.get().strip()
