@@ -12,6 +12,7 @@ from models import ServerProject
 from paths import ICON_FILE
 from services.php import (
     extract_docroot_from_command,
+    extract_php_binary_from_command,
     extract_router_from_command,
     is_php_builtin_command,
 )
@@ -263,6 +264,31 @@ class MainWindow(tk.Tk):
         router = extract_router_from_command(project.command) or "-"
         return docroot, router
 
+    @staticmethod
+    def _type_label(project: ServerProject) -> str:
+        """
+        Build the type label shown in the server table.
+
+        For PHP projects, include the configured PHP version when available.
+
+        :param project: Project whose type label is rendered
+        :return: Type label for the table, e.g. ``PHP 8.2``
+        """
+        base_label = server_type_label_for_command(project.command)
+        if base_label != "PHP":
+            return base_label
+
+        php_binary = extract_php_binary_from_command(project.command)
+        if not php_binary:
+            return "PHP"
+
+        binary_name = php_binary.split("/")[-1]
+        if binary_name == "php":
+            return "PHP"
+        if binary_name.startswith("php") and len(binary_name) > 3:
+            return f"PHP {binary_name[3:]}"
+        return "PHP"
+
     def _process_stats(self, name: str) -> Tuple[str, str]:
         process = self.processes.get(name)
         if process is None or not process.is_running():
@@ -315,7 +341,7 @@ class MainWindow(tk.Tk):
                     iid=project.name,
                     text=project.name,
                     values=(
-                        server_type_label_for_command(project.command),
+                        self._type_label(project),
                         project.port if project.port is not None else "-",
                         self._workers_label(project),
                         status,
