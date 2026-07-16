@@ -51,7 +51,7 @@ class PreferencesDialog(tk.Toplevel):
 
         button_frame = ttk.Frame(frame)
         button_frame.grid(row=2, column=0, columnspan=2, pady=(12, 8))
-        ttk.Button(button_frame, text="Save", command=self._on_save).pack(side="left", padx=4)
+        ttk.Button(button_frame, text="Save", style="Primary.TButton", command=self._on_save).pack(side="left", padx=4)
         ttk.Button(button_frame, text="Cancel", command=self._on_cancel).pack(side="left", padx=4)
 
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)

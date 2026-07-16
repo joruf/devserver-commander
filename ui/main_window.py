@@ -93,15 +93,17 @@ class MainWindow(tk.Tk):
         if "clam" in available_themes:
             style.theme_use("clam")
 
-        # Modern neutral palette with blue accent.
-        bg = "#f5f7fb"
+        # Modern neutral gray palette.
+        bg = "#f4f4f5"
         panel_bg = "#ffffff"
-        fg = "#111827"
-        muted_fg = "#6b7280"
-        border = "#d1d5db"
-        accent = "#2563eb"
-        accent_hover = "#1d4ed8"
-        selection = "#dbeafe"
+        fg = "#18181b"
+        muted_fg = "#71717a"
+        border = "#e4e4e7"
+        accent = "#3f3f46"
+        accent_hover = "#27272a"
+        accent_pressed = "#18181b"
+        selection = "#e4e4e7"
+        focus = "#a1a1aa"
 
         self.configure(background=bg)
         self.option_add("*Background", bg)
@@ -110,7 +112,7 @@ class MainWindow(tk.Tk):
         self.option_add("*Menu.Background", panel_bg)
         self.option_add("*Menu.Foreground", fg)
         self.option_add("*Menu.ActiveBackground", accent)
-        self.option_add("*Menu.ActiveForeground", "#ffffff")
+        self.option_add("*Menu.ActiveForeground", "#fafafa")
 
         style.configure(".", background=bg, foreground=fg)
         style.configure("TFrame", background=bg)
@@ -120,16 +122,37 @@ class MainWindow(tk.Tk):
         style.configure(
             "TButton",
             padding=(12, 7),
+            background=panel_bg,
+            foreground=fg,
+            borderwidth=1,
+            bordercolor=border,
+            focusthickness=1,
+            focuscolor=focus,
+            relief="flat",
+        )
+        style.map(
+            "TButton",
+            background=[("active", "#fafafa"), ("pressed", "#f4f4f5"), ("disabled", bg)],
+            foreground=[("disabled", "#a1a1aa")],
+            bordercolor=[("active", "#d4d4d8"), ("disabled", border)],
+        )
+        style.configure(
+            "Primary.TButton",
+            padding=(12, 7),
             background=accent,
-            foreground="#ffffff",
+            foreground="#fafafa",
             borderwidth=0,
             focusthickness=0,
             relief="flat",
         )
         style.map(
-            "TButton",
-            background=[("active", accent_hover), ("pressed", accent_hover), ("disabled", "#9ca3af")],
-            foreground=[("disabled", "#e5e7eb")],
+            "Primary.TButton",
+            background=[
+                ("active", accent_hover),
+                ("pressed", accent_pressed),
+                ("disabled", "#a1a1aa"),
+            ],
+            foreground=[("disabled", "#f4f4f5")],
         )
         style.configure(
             "TMenubutton",
@@ -141,8 +164,8 @@ class MainWindow(tk.Tk):
         )
         style.map(
             "TMenubutton",
-            background=[("active", "#eff6ff")],
-            bordercolor=[("focus", accent)],
+            background=[("active", "#fafafa")],
+            bordercolor=[("focus", focus)],
         )
         style.configure(
             "TEntry",
@@ -156,9 +179,9 @@ class MainWindow(tk.Tk):
         )
         style.map(
             "TEntry",
-            bordercolor=[("focus", accent)],
-            lightcolor=[("focus", accent)],
-            darkcolor=[("focus", accent)],
+            bordercolor=[("focus", focus)],
+            lightcolor=[("focus", focus)],
+            darkcolor=[("focus", focus)],
         )
         style.configure(
             "TCombobox",
@@ -171,9 +194,9 @@ class MainWindow(tk.Tk):
         style.map(
             "TCombobox",
             fieldbackground=[("readonly", panel_bg)],
-            bordercolor=[("focus", accent)],
-            lightcolor=[("focus", accent)],
-            darkcolor=[("focus", accent)],
+            bordercolor=[("focus", focus)],
+            lightcolor=[("focus", focus)],
+            darkcolor=[("focus", focus)],
         )
         style.configure(
             "Treeview",
@@ -198,7 +221,7 @@ class MainWindow(tk.Tk):
             bordercolor=border,
             relief="flat",
         )
-        style.map("Treeview.Heading", background=[("active", "#eef2ff")], foreground=[("active", fg)])
+        style.map("Treeview.Heading", background=[("active", "#fafafa")], foreground=[("active", fg)])
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self)
@@ -228,19 +251,21 @@ class MainWindow(tk.Tk):
         toolbar = ttk.Frame(self)
         toolbar.pack(side="top", fill="x", padx=8, pady=6)
 
-        ttk.Button(toolbar, text="Add", command=self._add_project).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Add", style="Primary.TButton", command=self._add_project).pack(side="left", padx=2)
         self.btn_edit = ttk.Button(toolbar, text="Edit", command=self._edit_project)
         self.btn_edit.pack(side="left", padx=2)
         self.btn_remove = ttk.Button(toolbar, text="Remove", command=self._remove_project)
         self.btn_remove.pack(side="left", padx=2)
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
-        self.btn_start = ttk.Button(toolbar, text="Start", command=self._start_selected)
+        self.btn_start = ttk.Button(toolbar, text="Start", style="Primary.TButton", command=self._start_selected)
         self.btn_start.pack(side="left", padx=2)
-        self.btn_stop = ttk.Button(toolbar, text="Stop", command=self._stop_selected)
+        self.btn_stop = ttk.Button(toolbar, text="Stop", style="Primary.TButton", command=self._stop_selected)
         self.btn_stop.pack(side="left", padx=2)
-        self.btn_restart = ttk.Button(toolbar, text="Restart", command=self._restart_selected)
+        self.btn_restart = ttk.Button(toolbar, text="Restart", style="Primary.TButton", command=self._restart_selected)
         self.btn_restart.pack(side="left", padx=2)
-        self.btn_open = ttk.Button(toolbar, text="Open Website", command=self._open_selected_website)
+        self.btn_open = ttk.Button(
+            toolbar, text="Open Website", style="Primary.TButton", command=self._open_selected_website
+        )
         self.btn_open.pack(side="left", padx=2)
 
         paned = ttk.Panedwindow(self, orient="vertical")

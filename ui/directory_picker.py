@@ -72,7 +72,7 @@ class DirectoryPickerDialog(tk.Toplevel):
         button_frame = ttk.Frame(frame)
         button_frame.pack(fill="x", pady=(8, 0))
         ttk.Button(button_frame, text="Up", command=self._go_up).pack(side="left", padx=4)
-        ttk.Button(button_frame, text="Select", command=self._on_select).pack(side="right", padx=4)
+        ttk.Button(button_frame, text="Select", style="Primary.TButton", command=self._on_select).pack(side="right", padx=4)
         ttk.Button(button_frame, text="Cancel", command=self._on_cancel).pack(side="right", padx=4)
 
     def _show_hidden(self) -> bool:

@@ -113,6 +113,7 @@ class ProjectDialog(tk.Toplevel):
             ttk.Button(
                 self.path_frame,
                 text="Auto Detect",
+                style="Primary.TButton",
                 command=self._detect_from_main_path,
             ).grid(row=0, column=3, **pad)
             self.path_frame.columnconfigure(1, weight=1)
@@ -196,7 +197,9 @@ class ProjectDialog(tk.Toplevel):
         self.php_version_menu = ttk.OptionMenu(php_frame, self.php_version_var, "")
         self.php_version_menu.pack(side="left", fill="x", expand=True)
         ttk.Button(php_frame, text="Refresh", command=self._refresh_php_versions).pack(side="left", padx=(6, 0))
-        ttk.Button(php_frame, text="Install...", command=self._install_php_version).pack(side="left", padx=(6, 0))
+        ttk.Button(php_frame, text="Install...", style="Primary.TButton", command=self._install_php_version).pack(
+            side="left", padx=(6, 0)
+        )
 
         php_row += 1
         ttk.Label(self.php_options_frame, text="Document root (-t):").grid(row=php_row, column=0, sticky="w", **pad)
@@ -313,6 +316,7 @@ class ProjectDialog(tk.Toplevel):
         self.dev_tool_install_button = ttk.Button(
             self.dev_tool_frame,
             text="Install...",
+            style="Primary.TButton",
             command=self._install_dev_tool,
         )
         self.dev_tool_status_label.pack(side="left", padx=(0, 6))
@@ -355,7 +359,7 @@ class ProjectDialog(tk.Toplevel):
         row += 1
         button_frame = ttk.Frame(frame)
         button_frame.grid(row=row, column=0, columnspan=3, pady=(12, 8))
-        self.btn_save = ttk.Button(button_frame, text="Save", command=self._on_save)
+        self.btn_save = ttk.Button(button_frame, text="Save", style="Primary.TButton", command=self._on_save)
         self.btn_cancel = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
         self.btn_cancel.pack(side="left", padx=4)
 
@@ -876,7 +880,7 @@ class ProjectDialog(tk.Toplevel):
 
         button_frame = ttk.Frame(dialog)
         button_frame.grid(row=1, column=1, sticky="e", **pad)
-        ttk.Button(button_frame, text="Install", command=start_install).pack(side="left", padx=4)
+        ttk.Button(button_frame, text="Install", style="Primary.TButton", command=start_install).pack(side="left", padx=4)
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side="left", padx=4)
 
     def _browse_directory(self) -> None:
