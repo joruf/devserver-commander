@@ -68,6 +68,7 @@ class MainWindow(tk.Tk):
         self._drag_active = False
         self._drop_indicator_index: Optional[int] = None
 
+        self._configure_ui_style()
         self._build_menu()
         self._build_widgets()
         self._build_context_menu()
@@ -79,6 +80,125 @@ class MainWindow(tk.Tk):
         self.after_idle(self._on_application_ready)
         self.after(200, self._autostart_projects)
         self.after(POLL_INTERVAL_MS, self._poll)
+
+    def _configure_ui_style(self) -> None:
+        """
+        Apply a modern ttk theme with subtle spacing improvements.
+
+        This keeps the existing layout and behavior intact while improving
+        visual appearance across the main window and dialogs.
+        """
+        style = ttk.Style(self)
+        available_themes = set(style.theme_names())
+        if "clam" in available_themes:
+            style.theme_use("clam")
+
+        # Modern neutral palette with blue accent.
+        bg = "#f5f7fb"
+        panel_bg = "#ffffff"
+        fg = "#111827"
+        muted_fg = "#6b7280"
+        border = "#d1d5db"
+        accent = "#2563eb"
+        accent_hover = "#1d4ed8"
+        selection = "#dbeafe"
+
+        self.configure(background=bg)
+        self.option_add("*Background", bg)
+        self.option_add("*Foreground", fg)
+        self.option_add("*Font", "TkDefaultFont 10")
+        self.option_add("*Menu.Background", panel_bg)
+        self.option_add("*Menu.Foreground", fg)
+        self.option_add("*Menu.ActiveBackground", accent)
+        self.option_add("*Menu.ActiveForeground", "#ffffff")
+
+        style.configure(".", background=bg, foreground=fg)
+        style.configure("TFrame", background=bg)
+        style.configure("TLabelframe", background=bg, bordercolor=border, relief="flat")
+        style.configure("TLabelframe.Label", background=bg, foreground=muted_fg)
+        style.configure("TLabel", background=bg, foreground=fg)
+        style.configure(
+            "TButton",
+            padding=(12, 7),
+            background=accent,
+            foreground="#ffffff",
+            borderwidth=0,
+            focusthickness=0,
+            relief="flat",
+        )
+        style.map(
+            "TButton",
+            background=[("active", accent_hover), ("pressed", accent_hover), ("disabled", "#9ca3af")],
+            foreground=[("disabled", "#e5e7eb")],
+        )
+        style.configure(
+            "TMenubutton",
+            padding=(10, 6),
+            background=panel_bg,
+            foreground=fg,
+            borderwidth=1,
+            relief="flat",
+        )
+        style.map(
+            "TMenubutton",
+            background=[("active", "#eff6ff")],
+            bordercolor=[("focus", accent)],
+        )
+        style.configure(
+            "TEntry",
+            padding=(8, 6),
+            fieldbackground=panel_bg,
+            foreground=fg,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            relief="flat",
+        )
+        style.map(
+            "TEntry",
+            bordercolor=[("focus", accent)],
+            lightcolor=[("focus", accent)],
+            darkcolor=[("focus", accent)],
+        )
+        style.configure(
+            "TCombobox",
+            padding=(8, 6),
+            fieldbackground=panel_bg,
+            foreground=fg,
+            bordercolor=border,
+            arrowsize=13,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", panel_bg)],
+            bordercolor=[("focus", accent)],
+            lightcolor=[("focus", accent)],
+            darkcolor=[("focus", accent)],
+        )
+        style.configure(
+            "Treeview",
+            rowheight=26,
+            background=panel_bg,
+            fieldbackground=panel_bg,
+            foreground=fg,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", selection)],
+            foreground=[("selected", fg)],
+        )
+        style.configure(
+            "Treeview.Heading",
+            padding=(10, 7),
+            background=bg,
+            foreground=muted_fg,
+            bordercolor=border,
+            relief="flat",
+        )
+        style.map("Treeview.Heading", background=[("active", "#eef2ff")], foreground=[("active", fg)])
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self)
