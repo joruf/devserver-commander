@@ -11,6 +11,36 @@ _CPU_COUNT = os.cpu_count() or 1
 _PREVIOUS_CPU_SAMPLES: Dict[int, Tuple[int, float]] = {}
 
 
+def _parse_process_total_time(stat_line: str) -> Optional[int]:
+    """
+    Parse ``utime + stime`` from one ``/proc/<pid>/stat`` line.
+
+    The second field (process name) is wrapped in parentheses and may contain
+    spaces. A naive ``split()`` can shift field indices and produce wrong CPU
+    values, so parsing starts after the closing parenthesis.
+
+    :param stat_line: Raw line from ``/proc/<pid>/stat``
+    :return: Sum of ``utime`` and ``stime`` clock ticks, or None on parse error
+    """
+    stat_line = stat_line.strip()
+    closing_paren = stat_line.rfind(")")
+    if closing_paren < 0:
+        return None
+
+    remainder = stat_line[closing_paren + 1 :].strip()
+    fields = remainder.split()
+    if len(fields) < 15:
+        return None
+
+    try:
+        utime = int(fields[11])
+        stime = int(fields[12])
+    except ValueError:
+        return None
+
+    return utime + stime
+
+
 def pid_for_port(port: int) -> Optional[int]:
     """
     Return the PID listening on the given TCP port, if any.
@@ -49,20 +79,11 @@ def _read_process_times(pid: int) -> Optional[int]:
     """
     try:
         with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as handle:
-            stat_fields = handle.read().split()
+            stat_line = handle.read()
     except OSError:
         return None
 
-    if len(stat_fields) < 15:
-        return None
-
-    try:
-        utime = int(stat_fields[13])
-        stime = int(stat_fields[14])
-    except ValueError:
-        return None
-
-    return utime + stime
+    return _parse_process_total_time(stat_line)
 
 
 def _read_memory_bytes(pid: int) -> Optional[int]:

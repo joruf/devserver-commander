@@ -31,8 +31,13 @@ from ui.window_icon import apply_window_icon
 POLL_INTERVAL_MS = 1000
 LOG_TAIL_BYTES = 8000
 TREE_COLUMN_PADDING = 12
+TREE_HEADING_EXTRA_PADDING = 16
 TREE_AUTOSTART_MIN_WIDTH = 24
 LOG_COPY_MAX_LINES = 200
+WINDOW_MIN_WIDTH = 960
+WINDOW_MIN_HEIGHT = 480
+WINDOW_SCREEN_MARGIN = 24
+WINDOW_TREE_EXTRA_WIDTH = 48
 
 
 class MainWindow(tk.Tk):
@@ -42,7 +47,7 @@ class MainWindow(tk.Tk):
         super().__init__()
         self.title("DevServer Commander")
         self.geometry("1200x560")
-        self.minsize(960, 480)
+        self.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         apply_window_icon(self)
 
         self.config_manager = ConfigManager()
@@ -67,6 +72,7 @@ class MainWindow(tk.Tk):
         self._drag_start_y: int = 0
         self._drag_active = False
         self._drop_indicator_index: Optional[int] = None
+        self._columns_auto_sized = False
 
         self._configure_ui_style()
         self._build_menu()
@@ -506,7 +512,10 @@ class MainWindow(tk.Tk):
         finally:
             self._refreshing_tree = False
 
-        self._resize_tree_columns()
+        if not self._columns_auto_sized:
+            self._resize_tree_columns()
+            self._fit_window_width_to_tree()
+            self._columns_auto_sized = True
         self._sync_autostart_widgets()
         self._selected_name = self._selected_project_name()
         self._update_action_buttons()
@@ -558,6 +567,18 @@ class MainWindow(tk.Tk):
             return tkfont.Font(font=font_spec)
         return tkfont.Font()
 
+    def _tree_heading_font(self) -> tkfont.Font:
+        """
+        Return the font used by tree view column headings.
+
+        :return: Treeview heading font
+        """
+        style = ttk.Style()
+        font_spec = style.lookup("Treeview.Heading", "font")
+        if font_spec:
+            return tkfont.Font(font=font_spec)
+        return self._tree_font()
+
     def _text_width(self, font: tkfont.Font, text: str) -> int:
         """
         Measure rendered text width in pixels.
@@ -570,8 +591,8 @@ class MainWindow(tk.Tk):
 
     def _resize_tree_columns(self) -> None:
         """Resize tree columns to fit the longest visible cell content."""
-        font = self._tree_font()
-        centered_columns = {"type", "port", "workers", "status", "autostart", "cpu", "memory"}
+        content_font = self._tree_font()
+        heading_font = self._tree_heading_font()
         column_headings = {
             "#0": "Name",
             "type": "Type",
@@ -587,23 +608,60 @@ class MainWindow(tk.Tk):
         }
 
         for column_id, heading in column_headings.items():
-            max_width = self._text_width(font, heading)
+            heading_width = self._text_width(heading_font, heading) + TREE_HEADING_EXTRA_PADDING
+            max_width = heading_width
             if column_id == "#0":
                 for item in self.tree.get_children():
-                    max_width = max(max_width, self._text_width(font, self.tree.item(item, "text")))
+                    max_width = max(
+                        max_width,
+                        self._text_width(content_font, self.tree.item(item, "text")),
+                    )
             else:
                 for item in self.tree.get_children():
                     values = self.tree.item(item, "values")
                     column_index = list(self.tree["columns"]).index(column_id)
                     if column_index < len(values):
-                        max_width = max(max_width, self._text_width(font, str(values[column_index])))
+                        max_width = max(
+                            max_width,
+                            self._text_width(content_font, str(values[column_index])),
+                        )
 
             if column_id == "autostart":
                 max_width = max(max_width, TREE_AUTOSTART_MIN_WIDTH)
 
             width = max_width + TREE_COLUMN_PADDING
-            anchor = "center" if column_id in centered_columns else "w"
-            self.tree.column(column_id, width=width, minwidth=width, stretch=False, anchor=anchor)
+            min_width = TREE_AUTOSTART_MIN_WIDTH if column_id == "autostart" else 40
+            self.tree.column(column_id, width=width, minwidth=min_width, stretch=False, anchor="w")
+
+    def _fit_window_width_to_tree(self) -> None:
+        """
+        Resize the main window width to the table width within screen bounds.
+
+        The width is clamped so the window remains fully visible on screen.
+        """
+        self.update_idletasks()
+
+        column_ids = ["#0", *self.tree["columns"]]
+        table_width = sum(int(self.tree.column(column_id, "width")) for column_id in column_ids)
+        scrollbar_width = self._tree_vscrollbar.winfo_width() or 16
+        target_width = table_width + scrollbar_width + WINDOW_TREE_EXTRA_WIDTH
+        target_width = max(target_width, WINDOW_MIN_WIDTH)
+
+        screen_width = self.winfo_screenwidth()
+        max_width = max(WINDOW_MIN_WIDTH, screen_width - WINDOW_SCREEN_MARGIN)
+        target_width = min(target_width, max_width)
+
+        current_height = max(self.winfo_height(), WINDOW_MIN_HEIGHT)
+        current_x = max(self.winfo_x(), 0)
+        current_y = max(self.winfo_y(), 0)
+        screen_height = self.winfo_screenheight()
+
+        max_x = max(0, screen_width - target_width)
+        max_y = max(0, screen_height - current_height)
+        target_x = min(current_x, max_x)
+        target_y = min(current_y, max_y)
+
+        self.geometry(f"{target_width}x{current_height}+{target_x}+{target_y}")
 
     def _sync_autostart_widgets(self) -> None:
         """Create or update autostart checkboxes for the current server list."""
@@ -713,7 +771,6 @@ class MainWindow(tk.Tk):
                 values[9] = memory_label
                 self.tree.item(project.name, values=values)
 
-        self._resize_tree_columns()
         self.after_idle(self._position_autostart_widgets)
 
     def _schedule_stats_poll(self) -> None:
