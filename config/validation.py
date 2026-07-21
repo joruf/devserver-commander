@@ -324,6 +324,7 @@ def validate_php_command_matches_form(
     php_binary: str,
     docroot: str,
     router: str,
+    php_options: str = "",
 ) -> Optional[str]:
     """
     Validate that a stored PHP command matches the form values.
@@ -332,9 +333,10 @@ def validate_php_command_matches_form(
     :param php_binary: Selected PHP binary path
     :param docroot: Document root path from the form
     :param router: Optional router script path
+    :param php_options: Additional PHP CLI options before ``-S``
     :return: Error message or None when valid
     """
-    expected = build_php_builtin_command(php_binary, docroot, router)
+    expected = build_php_builtin_command(php_binary, docroot, router, php_options)
     normalized_command = command.replace("{port}", PLACEHOLDER_PORT)
     normalized_expected = expected.replace("{port}", PLACEHOLDER_PORT)
     if normalized_command != normalized_expected:
@@ -470,6 +472,7 @@ def validate_server_setup(
     php_binary: str = "",
     docroot: str = "",
     router: str = "",
+    php_options: str = "",
     node_mode: str = "",
     node_target: str = "",
 ) -> Optional[str]:
@@ -482,6 +485,7 @@ def validate_server_setup(
     :param php_binary: Selected PHP binary for PHP servers
     :param docroot: PHP document root
     :param router: Optional PHP router script
+    :param php_options: Additional PHP CLI options before ``-S``
     :param node_mode: Node.js run mode key
     :param node_target: Node.js script or command target
     :return: Error message or None when valid
@@ -494,7 +498,7 @@ def validate_server_setup(
         error = validate_php_setup(directory, php_binary, docroot, router)
         if error:
             return error
-        return validate_php_command_matches_form(command, php_binary, docroot, router)
+        return validate_php_command_matches_form(command, php_binary, docroot, router, php_options)
 
     if server_type == "node":
         return validate_node_setup(directory, node_mode, node_target, command)

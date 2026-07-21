@@ -24,14 +24,17 @@ from services.node import (
     extract_node_target,
 )
 from services.php import (
+    build_php_ini_options,
     build_php_builtin_command,
     default_php_binary,
     detect_php_versions,
     extract_docroot_from_command,
     extract_php_binary_from_command,
+    extract_php_options_from_command,
     extract_router_from_command,
     format_docroot_for_display,
     install_php_version,
+    split_known_php_ini_options,
 )
 from services.project_detection import ProjectDetectionResult, detect_project_settings
 from services.process import format_launch_command
@@ -46,6 +49,8 @@ SERVER_TYPES = {
 }
 
 LABEL_COLUMN_MINSIZE = 175
+PHP_INI_MAX_INPUT_VARS = "max_input_vars"
+PHP_INI_MAX_INPUT_TIME = "max_input_time"
 
 
 class ProjectDialog(tk.Toplevel):
@@ -200,6 +205,44 @@ class ProjectDialog(tk.Toplevel):
         ttk.Button(php_frame, text="Install...", style="Primary.TButton", command=self._install_php_version).pack(
             side="left", padx=(6, 0)
         )
+
+        known_ini_values: Dict[str, str] = {}
+        remaining_php_options = ""
+        if use_php:
+            known_ini_values, remaining_php_options = split_known_php_ini_options(
+                extract_php_options_from_command(project_command),
+                [PHP_INI_MAX_INPUT_TIME, PHP_INI_MAX_INPUT_VARS],
+            )
+
+        php_row += 1
+        ttk.Label(self.php_options_frame, text="max_input_vars:").grid(row=php_row, column=0, sticky="w", **pad)
+        self.max_input_vars_var = tk.StringVar(value=known_ini_values.get(PHP_INI_MAX_INPUT_VARS, ""))
+        ttk.Entry(self.php_options_frame, textvariable=self.max_input_vars_var, width=16).grid(
+            row=php_row, column=1, sticky="w", **pad
+        )
+
+        php_row += 1
+        ttk.Label(self.php_options_frame, text="max_input_time:").grid(row=php_row, column=0, sticky="w", **pad)
+        self.max_input_time_var = tk.StringVar(value=known_ini_values.get(PHP_INI_MAX_INPUT_TIME, ""))
+        ttk.Entry(self.php_options_frame, textvariable=self.max_input_time_var, width=16).grid(
+            row=php_row, column=1, sticky="w", **pad
+        )
+
+        php_row += 1
+        ttk.Label(self.php_options_frame, text="Additional PHP options:").grid(
+            row=php_row, column=0, sticky="w", **pad
+        )
+        self.php_options_var = tk.StringVar(value=remaining_php_options if use_php else "")
+        ttk.Entry(self.php_options_frame, textvariable=self.php_options_var, width=40).grid(
+            row=php_row, column=1, sticky="we", **pad
+        )
+
+        php_row += 1
+        ttk.Label(
+            self.php_options_frame,
+            text="Optional, e.g. -d max_input_vars=5000 -d xdebug.mode=off",
+            foreground="gray",
+        ).grid(row=php_row, column=1, sticky="w", **pad)
 
         php_row += 1
         ttk.Label(self.php_options_frame, text="Document root (-t):").grid(row=php_row, column=0, sticky="w", **pad)
@@ -373,6 +416,9 @@ class ProjectDialog(tk.Toplevel):
         self.custom_command_frame.columnconfigure(1, weight=1)
 
         for variable in (
+            self.max_input_vars_var,
+            self.max_input_time_var,
+            self.php_options_var,
             self.docroot_var,
             self.router_var,
             self.port_var,
@@ -436,10 +482,16 @@ class ProjectDialog(tk.Toplevel):
         self.server_type_var.set(server_type_label(detected.server_type))
         self.directory_var.set(detected.directory)
         if detected.server_type == "php":
+            self.max_input_vars_var.set("")
+            self.max_input_time_var.set("")
+            self.php_options_var.set("")
             self.docroot_var.set(detected.docroot)
             self.router_var.set(detected.router)
             self.custom_command_var.set("")
         elif detected.server_type == "node":
+            self.max_input_vars_var.set("")
+            self.max_input_time_var.set("")
+            self.php_options_var.set("")
             node_mode_label = next(
                 (label for label, key in NODE_MODES.items() if key == detected.node_mode),
                 "npm run",
@@ -449,6 +501,9 @@ class ProjectDialog(tk.Toplevel):
             self.node_port_env_var.set(detected.use_port_env)
             self.custom_command_var.set("")
         else:
+            self.max_input_vars_var.set("")
+            self.max_input_time_var.set("")
+            self.php_options_var.set("")
             self.custom_command_var.set(detected.command)
             self.docroot_var.set("public/")
             self.router_var.set("")
@@ -513,6 +568,9 @@ class ProjectDialog(tk.Toplevel):
         self.directory_var.set("")
         self.port_var.set("")
         self.server_type_var.set(server_type_label("php"))
+        self.max_input_vars_var.set("")
+        self.max_input_time_var.set("")
+        self.php_options_var.set("")
         self.docroot_var.set("public/")
         self.router_var.set("")
         self.xdebug_var.set(False)
@@ -573,13 +631,22 @@ class ProjectDialog(tk.Toplevel):
                 self.directory_var.set(preset.directory_hint)
 
             if preset.server_type == "php":
+                self.max_input_vars_var.set("")
+                self.max_input_time_var.set("")
+                self.php_options_var.set("")
                 self.docroot_var.set(preset.docroot)
                 self.router_var.set(preset.router)
             elif preset.server_type == "node":
+                self.max_input_vars_var.set("")
+                self.max_input_time_var.set("")
+                self.php_options_var.set("")
                 self.node_mode_var.set(preset.node_mode)
                 self.node_target_var.set(preset.node_target)
                 self.node_port_env_var.set(preset.use_port_env)
             else:
+                self.max_input_vars_var.set("")
+                self.max_input_time_var.set("")
+                self.php_options_var.set("")
                 if preset.dev_tool_id:
                     self.custom_command_var.set(default_command_for_tool(preset.dev_tool_id))
                 else:
@@ -627,6 +694,18 @@ class ProjectDialog(tk.Toplevel):
         router_value = self.router_var.get().strip()
         if router_value != self.router_var.get():
             self.router_var.set(router_value)
+
+        php_options_value = self.php_options_var.get().strip()
+        if php_options_value != self.php_options_var.get():
+            self.php_options_var.set(php_options_value)
+
+        max_input_vars_value = self.max_input_vars_var.get().strip()
+        if max_input_vars_value != self.max_input_vars_var.get():
+            self.max_input_vars_var.set(max_input_vars_value)
+
+        max_input_time_value = self.max_input_time_var.get().strip()
+        if max_input_time_value != self.max_input_time_var.get():
+            self.max_input_time_var.set(max_input_time_value)
 
     def _current_dev_tool_id(self) -> Optional[str]:
         if not self._editing:
@@ -799,6 +878,28 @@ class ProjectDialog(tk.Toplevel):
     def _selected_node_mode(self) -> str:
         return NODE_MODES[self.node_mode_var.get()]
 
+    def _php_ini_values_from_form(self) -> Dict[str, str]:
+        """
+        Return recognized PHP INI values from dedicated form fields.
+
+        :return: Mapping of INI keys to user-provided values
+        """
+        return {
+            PHP_INI_MAX_INPUT_VARS: self.max_input_vars_var.get().strip(),
+            PHP_INI_MAX_INPUT_TIME: self.max_input_time_var.get().strip(),
+        }
+
+    def _php_options_from_form(self) -> str:
+        """
+        Build the complete PHP options string from form fields.
+
+        :return: Combined PHP options for the generated command
+        """
+        return build_php_ini_options(
+            self._php_ini_values_from_form(),
+            self.php_options_var.get(),
+        )
+
     def _build_stored_command(self) -> str:
         server_type = self._current_server_type()
         if server_type == "custom":
@@ -811,6 +912,7 @@ class ProjectDialog(tk.Toplevel):
             self._selected_php_binary(),
             self.docroot_var.get(),
             self.router_var.get(),
+            self._php_options_from_form(),
         )
 
     def _build_preview_env(self) -> Dict[str, str]:
@@ -928,6 +1030,32 @@ class ProjectDialog(tk.Toplevel):
 
         return {}
 
+    def _validate_php_ini_fields(self) -> bool:
+        """
+        Validate dedicated numeric PHP INI input fields.
+
+        :return: True when valid, otherwise False
+        """
+        if self._current_server_type() != "php":
+            return True
+
+        numeric_fields = [
+            ("max_input_vars", self.max_input_vars_var.get().strip()),
+            ("max_input_time", self.max_input_time_var.get().strip()),
+        ]
+        for key, value in numeric_fields:
+            if not value:
+                continue
+            if not value.isdigit():
+                messagebox.showerror(
+                    "Invalid PHP Option",
+                    f"{key} must be a positive whole number.",
+                    parent=self,
+                )
+                return False
+
+        return True
+
     def _on_save(self) -> None:
         if (
             not self._editing
@@ -942,6 +1070,8 @@ class ProjectDialog(tk.Toplevel):
             return
 
         self._sync_php_fields_before_save()
+        if not self._validate_php_ini_fields():
+            return
 
         name = self.name_var.get().strip()
         directory = self.directory_var.get().strip()
@@ -993,6 +1123,7 @@ class ProjectDialog(tk.Toplevel):
             php_binary=self._selected_php_binary() if server_type == "php" else "",
             docroot=self.docroot_var.get() if server_type == "php" else "",
             router=self.router_var.get() if server_type == "php" else "",
+            php_options=self._php_options_from_form() if server_type == "php" else "",
             node_mode=self._selected_node_mode() if server_type == "node" else "",
             node_target=self.node_target_var.get() if server_type == "node" else "",
         )
@@ -1009,6 +1140,7 @@ class ProjectDialog(tk.Toplevel):
                     php_binary=self._selected_php_binary() if server_type == "php" else "",
                     docroot=self.docroot_var.get() if server_type == "php" else "",
                     router=self.router_var.get() if server_type == "php" else "",
+                    php_options=self._php_options_from_form() if server_type == "php" else "",
                     node_mode=self._selected_node_mode() if server_type == "node" else "",
                     node_target=self.node_target_var.get() if server_type == "node" else "",
                 )

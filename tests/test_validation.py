@@ -13,10 +13,13 @@ from config.validation import (
 )
 from models import ServerProject
 from services.php import (
+    build_php_ini_options,
     WORKING_DIRECTORY_DOCROOT,
     build_php_builtin_command,
     extract_docroot_from_command,
+    split_known_php_ini_options,
     format_docroot_for_display,
+    extract_php_options_from_command,
     is_working_directory_docroot,
 )
 from services.project_detection import detect_project_settings
@@ -113,6 +116,54 @@ class PhpDocrootTests(unittest.TestCase):
         self.assertIn("-t public/", command)
         self.assertEqual(extract_docroot_from_command(command), "public/")
 
+    def test_build_command_with_additional_php_options(self) -> None:
+        command = build_php_builtin_command(
+            "/usr/bin/php8.4",
+            "/",
+            "",
+            "-d max_input_vars=5000 -d xdebug.mode=off",
+        )
+        self.assertIn("-d max_input_vars=5000", command)
+        self.assertIn("-d xdebug.mode=off", command)
+        self.assertIn("-S localhost:{port} -t .", command)
+
+    def test_extract_php_options_from_command(self) -> None:
+        command = (
+            "/usr/bin/php8.4 -d max_input_vars=5000 -d max_input_time=120 "
+            "-d xdebug.mode=off -S localhost:{port} -t ."
+        )
+        self.assertEqual(
+            extract_php_options_from_command(command),
+            "-d max_input_vars=5000 -d max_input_time=120 -d xdebug.mode=off",
+        )
+
+    def test_split_known_php_ini_options(self) -> None:
+        extracted, remaining = split_known_php_ini_options(
+            "-d max_input_vars=5000 -d max_input_time=120 -d xdebug.mode=off",
+            ["max_input_vars", "max_input_time"],
+        )
+        self.assertEqual(
+            extracted,
+            {
+                "max_input_vars": "5000",
+                "max_input_time": "120",
+            },
+        )
+        self.assertEqual(remaining, "-d xdebug.mode=off")
+
+    def test_build_php_ini_options(self) -> None:
+        options = build_php_ini_options(
+            {
+                "max_input_vars": "5000",
+                "max_input_time": "120",
+            },
+            "-d xdebug.mode=off",
+        )
+        self.assertEqual(
+            options,
+            "-d max_input_time=120 -d max_input_vars=5000 -d xdebug.mode=off",
+        )
+
 
 class ValidationTests(unittest.TestCase):
     """Tests for server configuration validation."""
@@ -151,6 +202,25 @@ class ValidationTests(unittest.TestCase):
                 "",
             )
             self.assertIsNone(error)
+
+    def test_validate_php_setup_with_additional_options(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir)
+            command = (
+                "/usr/bin/php8.4 -d max_input_vars=5000 -d max_input_time=120 "
+                "-d xdebug.mode=off -S localhost:{port} -t ."
+            )
+            self.assertIsNone(
+                validate_server_setup(
+                    server_type="php",
+                    directory=str(project_dir),
+                    command=command,
+                    php_binary="/usr/bin/php8.4",
+                    docroot="/",
+                    router="",
+                    php_options="-d max_input_vars=5000 -d max_input_time=120 -d xdebug.mode=off",
+                )
+            )
 
 
 class ProjectDetectionTests(unittest.TestCase):
