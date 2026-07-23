@@ -28,7 +28,7 @@ from ui.startup_notify import notify_desktop_startup_complete
 from ui.tray import TrayIcon
 from ui.window_icon import apply_window_icon
 
-POLL_INTERVAL_MS = 1000
+LIST_CHECK_INTERVAL_MS = 2000
 LOG_TAIL_BYTES = 8000
 TREE_COLUMN_PADDING = 12
 TREE_HEADING_EXTRA_PADDING = 16
@@ -73,6 +73,9 @@ class MainWindow(tk.Tk):
         self._drag_active = False
         self._drop_indicator_index: Optional[int] = None
         self._columns_auto_sized = False
+        self._config_mtime_seen = self._config_mtime()
+        self._last_display_snapshot: Optional[tuple] = None
+        self._list_poll_job_id: Optional[str] = None
 
         self._configure_ui_style()
         self._build_menu()
@@ -83,9 +86,10 @@ class MainWindow(tk.Tk):
         self._schedule_stats_poll()
 
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
+        self.bind_all("<F5>", self._on_manual_refresh)
         self.after_idle(self._on_application_ready)
         self.after(200, self._autostart_projects)
-        self.after(POLL_INTERVAL_MS, self._poll)
+        self._schedule_list_poll()
 
     def _configure_ui_style(self) -> None:
         """
@@ -238,6 +242,11 @@ class MainWindow(tk.Tk):
         menubar.add_cascade(label="File", menu=file_menu)
 
         view_menu = tk.Menu(menubar, tearoff=False)
+        view_menu.add_command(
+            label="Refresh Server List",
+            command=self._on_manual_refresh,
+            accelerator="F5",
+        )
         view_menu.add_command(label="Save Visible Log Output...", command=self._save_visible_log)
         menubar.add_cascade(label="View", menu=view_menu)
 
@@ -470,6 +479,117 @@ class MainWindow(tk.Tk):
             can_open = project is not None and project.port is not None
             self.btn_open.configure(state="normal" if can_open else "disabled")
 
+    def _config_mtime(self) -> float:
+        """
+        Return the modification time of the servers configuration file.
+
+        :return: File mtime in seconds, or ``0.0`` when unavailable
+        """
+        try:
+            return self.config_manager.path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    @staticmethod
+    def _projects_signature(projects: list[ServerProject]) -> tuple:
+        """
+        Build a comparable signature for the current project configuration.
+
+        :param projects: Project list to summarize
+        :return: Stable tuple describing project identity and runtime fields
+        """
+        return tuple(
+            (
+                project.name,
+                project.directory,
+                project.command,
+                project.port,
+                tuple(sorted(project.env.items())),
+                project.autostart,
+            )
+            for project in projects
+        )
+
+    def _sync_processes_with_projects(self) -> None:
+        """
+        Keep the process map aligned with the current project list.
+
+        Creates missing process wrappers, updates existing project references,
+        and drops wrappers for removed projects.
+        """
+        current_names = {project.name for project in self.projects}
+        for name in list(self.processes):
+            if name not in current_names:
+                del self.processes[name]
+                self._log_offsets.pop(name, None)
+
+        for project in self.projects:
+            existing = self.processes.get(project.name)
+            if existing is None:
+                self.processes[project.name] = ServerProcess(project)
+            else:
+                existing.project = project
+
+    def _reload_projects_from_disk(self, *, force: bool = False) -> bool:
+        """
+        Reload projects from disk when the configuration file changed.
+
+        :param force: Reload even when the file mtime appears unchanged
+        :return: True when the in-memory project list changed
+        """
+        mtime = self._config_mtime()
+        if not force and mtime == self._config_mtime_seen:
+            return False
+
+        loaded = self.config_manager.load()
+        self._config_mtime_seen = mtime
+        if self._projects_signature(loaded) == self._projects_signature(self.projects):
+            return False
+
+        self.projects = loaded
+        self._sync_processes_with_projects()
+        return True
+
+    def _project_status_label(self, project: ServerProject) -> str:
+        """
+        Build the status label for one project row.
+
+        :param project: Project whose runtime status is rendered
+        :return: Status text for the table
+        """
+        process = self.processes.get(project.name)
+        if process is None or not process.is_running():
+            return "Stopped"
+        if process.unmanaged:
+            return "Running (unmanaged)"
+        return "Running"
+
+    def _display_snapshot(self) -> tuple:
+        """
+        Build a comparable snapshot of currently displayed list data.
+
+        CPU/memory are excluded because they are refreshed on a separate timer.
+
+        :return: Snapshot of list rows that should trigger a UI refresh
+        """
+        rows = []
+        for project in self.projects:
+            docroot, router = self._docroot_and_router(project)
+            rows.append(
+                (
+                    project.name,
+                    self._type_label(project),
+                    project.port if project.port is not None else "-",
+                    self._workers_label(project),
+                    self._project_status_label(project),
+                    project.autostart,
+                    project.directory,
+                    docroot,
+                    router,
+                )
+            )
+        return tuple(rows)
+
     def _refresh_tree(self) -> None:
         previous_selection = self._selected_project_name()
         self._refreshing_tree = True
@@ -478,12 +598,6 @@ class MainWindow(tk.Tk):
                 self.tree.delete(item)
 
             for project in self.projects:
-                process = self.processes[project.name]
-                running = process.is_running()
-                if running:
-                    status = "Running (unmanaged)" if process.unmanaged else "Running"
-                else:
-                    status = "Stopped"
                 docroot, router = self._docroot_and_router(project)
                 cpu_label, memory_label = self._process_stats(project.name)
                 self.tree.insert(
@@ -495,7 +609,7 @@ class MainWindow(tk.Tk):
                         self._type_label(project),
                         project.port if project.port is not None else "-",
                         self._workers_label(project),
-                        status,
+                        self._project_status_label(project),
                         "",
                         project.directory,
                         docroot,
@@ -519,6 +633,20 @@ class MainWindow(tk.Tk):
         self._sync_autostart_widgets()
         self._selected_name = self._selected_project_name()
         self._update_action_buttons()
+        self._last_display_snapshot = self._display_snapshot()
+
+    def _refresh_tree_if_changed(self, *, force: bool = False) -> bool:
+        """
+        Refresh the server table only when display data changed.
+
+        :param force: Rebuild the table even when the snapshot is unchanged
+        :return: True when the table was refreshed
+        """
+        snapshot = self._display_snapshot()
+        if not force and snapshot == self._last_display_snapshot:
+            return False
+        self._refresh_tree()
+        return True
 
     @staticmethod
     def _read_boolean_var(variable: tk.BooleanVar) -> bool:
@@ -781,10 +909,44 @@ class MainWindow(tk.Tk):
         interval_ms = self.app_settings.stats_refresh_interval_seconds * 1000
         self._stats_job_id = self.after(interval_ms, self._schedule_stats_poll)
 
+    def _schedule_list_poll(self) -> None:
+        """
+        Schedule the next server-list consistency check.
+
+        :return: None
+        """
+        if self._list_poll_job_id is not None:
+            self.after_cancel(self._list_poll_job_id)
+        self._list_poll_job_id = self.after(LIST_CHECK_INTERVAL_MS, self._poll)
+
     def _poll(self) -> None:
-        self._refresh_tree()
+        """
+        Periodically reload config changes and refresh the list when needed.
+
+        :return: None
+        """
+        reloaded = self._reload_projects_from_disk()
+        self._refresh_tree_if_changed(force=reloaded)
         self._refresh_log_tail()
-        self.after(POLL_INTERVAL_MS, self._poll)
+        self._schedule_list_poll()
+
+    def _on_manual_refresh(self, _event=None) -> Optional[str]:
+        """
+        Force-reload the server list from disk and refresh the table.
+
+        Triggered by F5 or View → Refresh Server List.
+
+        :param _event: Optional Tk key event
+        :return: ``"break"`` when called from a key binding
+        """
+        reloaded = self._reload_projects_from_disk(force=True)
+        self._refresh_tree_if_changed(force=True)
+        self._refresh_log_tail(force_full=True)
+        if reloaded:
+            self._set_status("Server list reloaded from configuration.")
+        else:
+            self._set_status("Server list refreshed.")
+        return "break"
 
     def _on_tree_focus(self, _event=None) -> None:
         self.tree.focus_set()
@@ -1315,6 +1477,7 @@ class MainWindow(tk.Tk):
 
     def _save(self) -> None:
         self.config_manager.save(self.projects)
+        self._config_mtime_seen = self._config_mtime()
 
     def _open_preferences(self) -> None:
         dialog = PreferencesDialog(self, settings=self.app_settings)

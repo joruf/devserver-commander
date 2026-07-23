@@ -98,6 +98,9 @@ class ScreenshotMainWindow(MainWindow):
     def _schedule_stats_poll(self) -> None:
         return
 
+    def _schedule_list_poll(self) -> None:
+        return
+
 
 def capture_window(widget: tk.Misc, output_path: Path) -> None:
     """
