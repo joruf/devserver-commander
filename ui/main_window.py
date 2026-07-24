@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Dict, Optional, Tuple
 
 from config import AppSettingsManager, ConfigManager
+from config.validation import make_unique_project_name
 from models import ServerProject
 from paths import ICON_FILE
 from services.php import (
@@ -16,16 +17,19 @@ from services.php import (
     extract_router_from_command,
     is_php_builtin_command,
 )
+from services.port_scan import ScannedPort, read_process_cwd, suggest_command_for_port
 from services.process import ServerProcess, log_path_for
 from services.server_types import server_type_label_for_command
 from services.instance_ipc import InstanceControlServer
 from services.single_instance import enforce_single_instance
 from services.stats import format_cpu_percent, format_memory_bytes, get_process_stats
 from ui.desktop_setup import install_desktop_shortcut, maybe_prompt_desktop_setup
+from ui.port_scanner_dialog import PortScannerDialog
 from ui.preferences_dialog import PreferencesDialog
 from ui.project_dialog import ProjectDialog
 from ui.startup_notify import notify_desktop_startup_complete
 from ui.tray import TrayIcon
+from ui.tree_sort import TreeSorter
 from ui.window_icon import apply_window_icon
 
 LIST_CHECK_INTERVAL_MS = 2000
@@ -38,6 +42,20 @@ WINDOW_MIN_WIDTH = 960
 WINDOW_MIN_HEIGHT = 480
 WINDOW_SCREEN_MARGIN = 24
 WINDOW_TREE_EXTRA_WIDTH = 48
+
+TREE_COLUMN_HEADINGS = {
+    "#0": "Name",
+    "type": "Type",
+    "port": "Port",
+    "workers": "Workers",
+    "status": "Status",
+    "autostart": "Autostart",
+    "directory": "Directory",
+    "docroot": "Document root",
+    "router": "Router script",
+    "cpu": "CPU",
+    "memory": "Memory",
+}
 
 
 class MainWindow(tk.Tk):
@@ -65,6 +83,7 @@ class MainWindow(tk.Tk):
         self._tray_icon: Optional[TrayIcon] = None
         self._control_server: Optional[InstanceControlServer] = None
         self._exiting = False
+        self._unsaved_names: set[str] = set()
         self._autostart_vars: Dict[str, tk.BooleanVar] = {}
         self._autostart_checkbuttons: Dict[str, tk.Checkbutton] = {}
         self._syncing_autostart_widgets = False
@@ -248,6 +267,8 @@ class MainWindow(tk.Tk):
             accelerator="F5",
         )
         view_menu.add_command(label="Save Visible Log Output...", command=self._save_visible_log)
+        view_menu.add_separator()
+        view_menu.add_command(label="Port Scanner...", command=self._open_port_scanner)
         menubar.add_cascade(label="View", menu=view_menu)
 
         settings_menu = tk.Menu(menubar, tearoff=False)
@@ -271,6 +292,10 @@ class MainWindow(tk.Tk):
         self.btn_edit.pack(side="left", padx=2)
         self.btn_remove = ttk.Button(toolbar, text="Remove", command=self._remove_project)
         self.btn_remove.pack(side="left", padx=2)
+        self.btn_save_entry = ttk.Button(
+            toolbar, text="Save to servers.json", command=self._save_selected_unsaved_project
+        )
+        self.btn_save_entry.pack(side="left", padx=2)
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
         self.btn_start = ttk.Button(toolbar, text="Start", style="Primary.TButton", command=self._start_selected)
         self.btn_start.pack(side="left", padx=2)
@@ -282,6 +307,8 @@ class MainWindow(tk.Tk):
             toolbar, text="Open Website", style="Primary.TButton", command=self._open_selected_website
         )
         self.btn_open.pack(side="left", padx=2)
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Button(toolbar, text="Port Scanner...", command=self._open_port_scanner).pack(side="left", padx=2)
 
         paned = ttk.Panedwindow(self, orient="vertical")
         paned.pack(side="top", fill="both", expand=True, padx=8, pady=(0, 8))
@@ -303,20 +330,13 @@ class MainWindow(tk.Tk):
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="tree headings", height=10)
         self.drop_indicator = tk.Frame(self.tree, height=2, background="#22c55e")
         self.drop_indicator.place_forget()
-        self.tree.heading("#0", text="Name")
-        self.tree.heading("type", text="Type")
-        self.tree.heading("port", text="Port")
-        self.tree.heading("workers", text="Workers")
-        self.tree.heading("status", text="Status")
-        self.tree.heading("autostart", text="Autostart")
-        self.tree.heading("directory", text="Directory")
-        self.tree.heading("docroot", text="Document root")
-        self.tree.heading("router", text="Router script")
-        self.tree.heading("cpu", text="CPU")
-        self.tree.heading("memory", text="Memory")
+        for column_id, heading in TREE_COLUMN_HEADINGS.items():
+            self.tree.heading(column_id, text=heading)
         for column_id in ("#0", *columns):
             self.tree.column(column_id, stretch=False)
+        self.tree.tag_configure("unsaved", foreground="#b45309")
         self.tree.grid(row=0, column=0, sticky="nsew")
+        self._tree_sorter = TreeSorter(self.tree, TREE_COLUMN_HEADINGS, on_clear=self._refresh_tree)
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", self._on_tree_double_click)
         self.tree.bind("<Up>", self._on_tree_arrow_key)
@@ -380,6 +400,10 @@ class MainWindow(tk.Tk):
         self.context_menu.add_command(label="Restart Server", command=self._restart_selected)
         self.context_menu.add_separator()
         self.context_menu.add_command(label="Open Website", command=self._open_selected_website)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(
+            label="Save to servers.json", command=self._save_selected_unsaved_project
+        )
         self.context_menu.add_separator()
         self.context_menu.add_command(label="Edit...", command=self._edit_project)
         self.context_menu.add_command(label="Remove...", command=self._remove_project)
@@ -462,7 +486,8 @@ class MainWindow(tk.Tk):
         return format_cpu_percent(cpu_percent), format_memory_bytes(memory_bytes)
 
     def _update_action_buttons(self) -> None:
-        has_selection = self._selected_project_name() is not None
+        selected_name = self._selected_project_name()
+        has_selection = selected_name is not None
         state = "normal" if has_selection else "disabled"
         for button in (
             self.btn_edit,
@@ -474,8 +499,11 @@ class MainWindow(tk.Tk):
         ):
             button.configure(state=state)
 
+        can_save_entry = has_selection and selected_name in self._unsaved_names
+        self.btn_save_entry.configure(state="normal" if can_save_entry else "disabled")
+
         if has_selection:
-            project = self._get_project(self._selected_project_name() or "")
+            project = self._get_project(selected_name or "")
             can_open = project is not None and project.port is not None
             self.btn_open.configure(state="normal" if can_open else "disabled")
 
@@ -534,6 +562,10 @@ class MainWindow(tk.Tk):
         """
         Reload projects from disk when the configuration file changed.
 
+        Unsaved trial projects (added from the port scanner but not yet
+        written to servers.json) are kept across the reload, unless a
+        persisted project with the same name now exists on disk.
+
         :param force: Reload even when the file mtime appears unchanged
         :return: True when the in-memory project list changed
         """
@@ -543,10 +575,20 @@ class MainWindow(tk.Tk):
 
         loaded = self.config_manager.load()
         self._config_mtime_seen = mtime
-        if self._projects_signature(loaded) == self._projects_signature(self.projects):
+
+        loaded_names = {project.name for project in loaded}
+        surviving_unsaved = [
+            project
+            for project in self.projects
+            if project.name in self._unsaved_names and project.name not in loaded_names
+        ]
+        self._unsaved_names = {project.name for project in surviving_unsaved}
+        merged = loaded + surviving_unsaved
+
+        if self._projects_signature(merged) == self._projects_signature(self.projects):
             return False
 
-        self.projects = loaded
+        self.projects = merged
         self._sync_processes_with_projects()
         return True
 
@@ -600,11 +642,13 @@ class MainWindow(tk.Tk):
             for project in self.projects:
                 docroot, router = self._docroot_and_router(project)
                 cpu_label, memory_label = self._process_stats(project.name)
+                is_unsaved = project.name in self._unsaved_names
+                display_name = f"{project.name} (not saved)" if is_unsaved else project.name
                 self.tree.insert(
                     "",
                     "end",
                     iid=project.name,
-                    text=project.name,
+                    text=display_name,
                     values=(
                         self._type_label(project),
                         project.port if project.port is not None else "-",
@@ -617,7 +661,10 @@ class MainWindow(tk.Tk):
                         cpu_label,
                         memory_label,
                     ),
+                    tags=("unsaved",) if is_unsaved else (),
                 )
+
+            self._tree_sorter.reapply()
 
             if previous_selection and self.tree.exists(previous_selection):
                 self.tree.selection_set(previous_selection)
@@ -721,21 +768,8 @@ class MainWindow(tk.Tk):
         """Resize tree columns to fit the longest visible cell content."""
         content_font = self._tree_font()
         heading_font = self._tree_heading_font()
-        column_headings = {
-            "#0": "Name",
-            "type": "Type",
-            "port": "Port",
-            "workers": "Workers",
-            "status": "Status",
-            "autostart": "Autostart",
-            "directory": "Directory",
-            "docroot": "Document root",
-            "router": "Router script",
-            "cpu": "CPU",
-            "memory": "Memory",
-        }
 
-        for column_id, heading in column_headings.items():
+        for column_id, heading in TREE_COLUMN_HEADINGS.items():
             heading_width = self._text_width(heading_font, heading) + TREE_HEADING_EXTRA_PADDING
             max_width = heading_width
             if column_id == "#0":
@@ -960,6 +994,14 @@ class MainWindow(tk.Tk):
         if self._refreshing_tree:
             return
 
+        if self._tree_sorter.is_sorted:
+            self._drag_source_name = None
+            self._set_status(
+                "Manual reordering is disabled while the list is sorted. "
+                "Click the sorted column header again to return to the saved order."
+            )
+            return
+
         row_id = self.tree.identify_row(event.y)
         self._drag_source_name = row_id if row_id else None
         self._drag_start_y = event.y
@@ -1126,6 +1168,8 @@ class MainWindow(tk.Tk):
             self.tree.focus(row_id)
             self._selected_name = row_id
             self._update_action_buttons()
+            save_state = "normal" if row_id in self._unsaved_names else "disabled"
+            self.context_menu.entryconfig("Save to servers.json", state=save_state)
             self.context_menu.tk_popup(event.x_root, event.y_root)
 
     def _on_tree_arrow_key(self, event) -> Optional[str]:
@@ -1309,6 +1353,9 @@ class MainWindow(tk.Tk):
         self.projects[index] = dialog.result
         del self.processes[name]
         self.processes[dialog.result.name] = ServerProcess(dialog.result)
+        if name in self._unsaved_names:
+            self._unsaved_names.discard(name)
+            self._unsaved_names.add(dialog.result.name)
         self._save()
         self._refresh_tree()
 
@@ -1333,6 +1380,7 @@ class MainWindow(tk.Tk):
 
         self.projects = [project for project in self.projects if project.name != name]
         del self.processes[name]
+        self._unsaved_names.discard(name)
         self._save()
         self._refresh_tree()
 
@@ -1476,7 +1524,9 @@ class MainWindow(tk.Tk):
         self._refresh_tree()
 
     def _save(self) -> None:
-        self.config_manager.save(self.projects)
+        """Persist all projects except unsaved trial entries from the port scanner."""
+        persisted = [project for project in self.projects if project.name not in self._unsaved_names]
+        self.config_manager.save(persisted)
         self._config_mtime_seen = self._config_mtime()
 
     def _open_preferences(self) -> None:
@@ -1492,6 +1542,71 @@ class MainWindow(tk.Tk):
             "Preferences saved. CPU and memory values refresh every "
             f"{self.app_settings.stats_refresh_interval_seconds} seconds."
         )
+
+    def _open_port_scanner(self) -> None:
+        """Open the port scanner dialog listing all listening TCP ports."""
+        configured_ports = {
+            project.port: project.name for project in self.projects if project.port is not None
+        }
+        dialog = PortScannerDialog(
+            self,
+            configured_ports=configured_ports,
+            on_take_over=self._take_over_scanned_port,
+        )
+        self.wait_window(dialog)
+
+    def _take_over_scanned_port(self, scanned: ScannedPort) -> None:
+        """
+        Open the project dialog pre-filled from a scanned port for a trial add.
+
+        The result is added to the in-memory server list so it can be started,
+        stopped, and tested right away, but is intentionally NOT written to
+        servers.json until the user explicitly saves it.
+
+        :param scanned: Port entry taken over from the port scanner dialog
+        """
+        directory = read_process_cwd(scanned.pid) if scanned.pid is not None else None
+        command = suggest_command_for_port(scanned.pid, scanned.port) if scanned.pid is not None else ""
+
+        suggested_name = make_unique_project_name(
+            self.projects, scanned.process_name or f"Port {scanned.port}"
+        )
+        guessed = ServerProject(
+            name=suggested_name,
+            directory=directory or "",
+            command=command,
+            port=scanned.port,
+            env={},
+            autostart=False,
+        )
+
+        dialog = ProjectDialog(self, project=guessed, existing_projects=self.projects)
+        dialog.title("Add Project from Port Scan")
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+
+        self.projects.append(dialog.result)
+        self.processes[dialog.result.name] = ServerProcess(dialog.result)
+        self._unsaved_names.add(dialog.result.name)
+        self._refresh_tree()
+        self._set_status(
+            f"Added '{dialog.result.name}' to the list for testing. "
+            "Use 'Save to servers.json' to keep it permanently."
+        )
+
+    def _save_selected_unsaved_project(self) -> None:
+        """Persist the selected unsaved trial project to servers.json."""
+        name = self._selected_project_name()
+        if not name or name not in self._unsaved_names:
+            return
+
+        self._unsaved_names.discard(name)
+        self._save()
+        self._refresh_tree()
+        if self.tree.exists(name):
+            self.tree.selection_set(name)
+        self._set_status(f"Saved '{name}' to servers.json.")
 
     def _create_desktop_shortcut(self) -> None:
         success, path = install_desktop_shortcut()
