@@ -5,12 +5,12 @@ import tkinter.font as tkfont
 import webbrowser
 from dataclasses import replace
 from tkinter import filedialog, messagebox, ttk
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 from config import AppSettingsManager, ConfigManager
 from config.validation import make_unique_project_name
 from models import ServerProject
-from paths import ICON_FILE
+from paths import AUTOSTART_FILE, ICON_FILE
 from services.php import (
     extract_docroot_from_command,
     extract_php_binary_from_command,
@@ -20,10 +20,16 @@ from services.php import (
 from services.port_scan import ScannedPort, read_process_cwd, suggest_command_for_port
 from services.process import ServerProcess, log_path_for
 from services.server_types import server_type_label_for_command
+from services.cli_args import parse_args
 from services.instance_ipc import InstanceControlServer
 from services.single_instance import enforce_single_instance
 from services.stats import format_cpu_percent, format_memory_bytes, get_process_stats
-from ui.desktop_setup import install_desktop_shortcut, maybe_prompt_desktop_setup
+from ui.desktop_setup import (
+    install_desktop_shortcut,
+    is_login_autostart_enabled,
+    maybe_prompt_desktop_setup,
+    set_login_autostart,
+)
 from ui.port_scanner_dialog import PortScannerDialog
 from ui.preferences_dialog import PreferencesDialog
 from ui.project_dialog import ProjectDialog
@@ -61,12 +67,21 @@ TREE_COLUMN_HEADINGS = {
 class MainWindow(tk.Tk):
     """Main application window."""
 
-    def __init__(self) -> None:
+    def __init__(self, start_in_tray: bool = False) -> None:
+        """
+        Build the main window.
+
+        :param start_in_tray: Start hidden in the system tray without showing the window
+        """
         super().__init__()
         self.title("DevServer Commander")
         self.geometry("1200x560")
         self.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         apply_window_icon(self)
+
+        self._start_in_tray = start_in_tray
+        if start_in_tray:
+            self.withdraw()
 
         self.config_manager = ConfigManager()
         self.settings_manager = AppSettingsManager()
@@ -411,14 +426,32 @@ class MainWindow(tk.Tk):
     def _on_application_ready(self) -> None:
         notify_desktop_startup_complete()
         self.update_idletasks()
-        self._start_tray_icon()
+        tray_available = self._start_tray_icon()
         self._start_control_server()
+
+        if not self._start_in_tray:
+            return
+
+        if tray_available:
+            self._set_status("Started in the system tray.")
+            return
+
+        self.deiconify()
+        self._set_status(
+            "System tray unavailable, showing the window instead. "
+            "Install GTK3 bindings to enable tray support."
+        )
 
     def _start_control_server(self) -> None:
         self._control_server = InstanceControlServer(on_show=lambda: self.after(0, self._show_from_tray))
         self._control_server.start()
 
-    def _start_tray_icon(self) -> None:
+    def _start_tray_icon(self) -> bool:
+        """
+        Start the system tray icon.
+
+        :return: True when tray support is available
+        """
         tray = TrayIcon(
             icon_path=ICON_FILE,
             tooltip="DevServer Commander",
@@ -427,9 +460,10 @@ class MainWindow(tk.Tk):
         )
         if tray.start():
             self._tray_icon = tray
-            return
+            return True
 
         self._set_status("System tray unavailable. Install GTK3 bindings to enable tray support.")
+        return False
 
     def _get_project(self, name: str) -> Optional[ServerProject]:
         return next((project for project in self.projects if project.name == name), None)
@@ -1530,7 +1564,11 @@ class MainWindow(tk.Tk):
         self._config_mtime_seen = self._config_mtime()
 
     def _open_preferences(self) -> None:
-        dialog = PreferencesDialog(self, settings=self.app_settings)
+        dialog = PreferencesDialog(
+            self,
+            settings=self.app_settings,
+            login_autostart=is_login_autostart_enabled(),
+        )
         self.wait_window(dialog)
         if dialog.result is None:
             return
@@ -1538,9 +1576,30 @@ class MainWindow(tk.Tk):
         self.app_settings = dialog.result
         self.settings_manager.save(self.app_settings)
         self._schedule_stats_poll()
+        self._apply_login_autostart(dialog.login_autostart_result)
         self._set_status(
             "Preferences saved. CPU and memory values refresh every "
             f"{self.app_settings.stats_refresh_interval_seconds} seconds."
+        )
+
+    def _apply_login_autostart(self, enabled: Optional[bool]) -> None:
+        """
+        Install or remove the login autostart entry when the setting changed.
+
+        :param enabled: Requested state, or None when the dialog was cancelled
+        :return: None
+        """
+        if enabled is None or enabled == is_login_autostart_enabled():
+            return
+
+        if set_login_autostart(enabled):
+            return
+
+        action = "enable" if enabled else "disable"
+        messagebox.showerror(
+            "Autostart",
+            f"Could not {action} the autostart entry at:\n{AUTOSTART_FILE}",
+            parent=self,
         )
 
     def _open_port_scanner(self) -> None:
@@ -1655,14 +1714,23 @@ class MainWindow(tk.Tk):
         self.destroy()
 
 
-def main() -> int:
-    may_continue, instance_guard = enforce_single_instance()
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """
+    Run the application.
+
+    :param argv: Command-line arguments without the program name; defaults to sys.argv[1:]
+    :return: Process exit code
+    """
+    options = parse_args(argv)
+
+    may_continue, instance_guard = enforce_single_instance(quiet=options.start_in_tray)
     if not may_continue:
         return 1
 
-    app = MainWindow()
+    app = MainWindow(start_in_tray=options.start_in_tray)
     app._instance_guard = instance_guard
-    app.after(100, lambda: maybe_prompt_desktop_setup(app))
+    if not options.start_in_tray:
+        app.after(100, lambda: maybe_prompt_desktop_setup(app))
     app.mainloop()
     instance_guard.release()
     return 0

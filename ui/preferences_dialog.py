@@ -15,9 +15,10 @@ from ui.window_icon import apply_window_icon
 class PreferencesDialog(tk.Toplevel):
     """Edit persisted application preferences."""
 
-    def __init__(self, parent: tk.Misc, settings: AppSettings) -> None:
+    def __init__(self, parent: tk.Misc, settings: AppSettings, login_autostart: bool = False) -> None:
         super().__init__(parent)
         self.result: Optional[AppSettings] = None
+        self.login_autostart_result: Optional[bool] = None
         self.title("Preferences")
         self.transient(parent)
         self.resizable(False, False)
@@ -49,8 +50,30 @@ class PreferencesDialog(tk.Toplevel):
             foreground="gray",
         ).grid(row=1, column=0, columnspan=2, sticky="w", **pad)
 
+        ttk.Separator(frame, orient="horizontal").grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=8,
+            pady=(10, 6),
+        )
+
+        self.login_autostart_var = tk.BooleanVar(master=self, value=login_autostart)
+        ttk.Checkbutton(
+            frame,
+            text="Start DevServer Commander on login",
+            variable=self.login_autostart_var,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", **pad)
+
+        ttk.Label(
+            frame,
+            text="On login the application starts in the system tray only, without opening the window.",
+            foreground="gray",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", **pad)
+
         button_frame = ttk.Frame(frame)
-        button_frame.grid(row=2, column=0, columnspan=2, pady=(12, 8))
+        button_frame.grid(row=5, column=0, columnspan=2, pady=(12, 8))
         ttk.Button(button_frame, text="Save", style="Primary.TButton", command=self._on_save).pack(side="left", padx=4)
         ttk.Button(button_frame, text="Cancel", command=self._on_cancel).pack(side="left", padx=4)
 
@@ -80,8 +103,10 @@ class PreferencesDialog(tk.Toplevel):
             return
 
         self.result = AppSettings(stats_refresh_interval_seconds=interval)
+        self.login_autostart_result = bool(self.login_autostart_var.get())
         self.destroy()
 
     def _on_cancel(self) -> None:
         self.result = None
+        self.login_autostart_result = None
         self.destroy()

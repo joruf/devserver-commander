@@ -1,12 +1,73 @@
 {
   "servers": [
     {
-      "name": "My PHP App",
-      "directory": "/home/username/Dokumente/GitHub/AeroPHP84",
-      "command": "/usr/bin/php8.5 -S localhost:{port} -t public/ public/index.php",
+      "name": "PM-Tool MVC",
+      "directory": "/home/joruf/Dokumente/pmtool",
+      "command": "/usr/bin/php8.2 -S localhost:{port} -t public/ public/router.php",
       "port": 8001,
+      "env": {
+        "XDEBUG_SESSION": "1",
+        "PHP_CLI_SERVER_WORKERS": "6"
+      },
+      "autostart": true
+    },
+    {
+      "name": "ServiceReports MVC",
+      "directory": "/home/joruf/Dokumente/servicereports",
+      "command": "/usr/bin/php8.2 -S localhost:{port} -t public/",
+      "port": 8002,
+      "env": {
+        "XDEBUG_SESSION": "1",
+        "PHP_CLI_SERVER_WORKERS": "6"
+      },
+      "autostart": true
+    },
+    {
+      "name": "PM-Tool Legacy",
+      "directory": "/home/joruf/Dokumente/pmtool-legacy",
+      "command": "/usr/bin/php8.2 -S localhost:{port} -t html/",
+      "port": 8003,
+      "env": {
+        "XDEBUG_SESSION": "1",
+        "PHP_CLI_SERVER_WORKERS": "6"
+      },
+      "autostart": true
+    },
+    {
+      "name": "ServiceReports Legacy",
+      "directory": "/home/joruf/Dokumente/servicereports-legacy",
+      "command": "/usr/bin/php8.2 -S localhost:{port} -t html/",
+      "port": 8004,
+      "env": {
+        "XDEBUG_SESSION": "1"
+      },
+      "autostart": true
+    },
+    {
+      "name": "Pebot",
+      "directory": "/home/joruf/Dokumente/pebot/joomla",
+      "command": "/usr/bin/php8.4 -d max_input_vars=5000 -d max_input_time=120 -d xdebug.mode=off -S localhost:{port} -t .",
+      "port": 8005,
+      "env": {
+        "PHP_CLI_SERVER_WORKERS": "2"
+      },
+      "autostart": true
+    },
+    {
+      "name": "MailHog",
+      "directory": "/home/joruf/Dokumente",
+      "command": "./mailhog",
+      "port": 8025,
       "env": {},
-      "autostart": false
+      "autostart": true
+    },
+    {
+      "name": "XD-Joomla-Import",
+      "directory": "/home/joruf/Dokumente/xd-image-extractor",
+      "command": "node server.js",
+      "port": 4321,
+      "env": {},
+      "autostart": true
     }
   ]
 }

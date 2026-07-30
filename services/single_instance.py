@@ -87,15 +87,20 @@ def show_already_running_message(focused_existing: bool = False) -> None:
     root.destroy()
 
 
-def enforce_single_instance() -> tuple[bool, SingleInstanceGuard]:
+def enforce_single_instance(quiet: bool = False) -> tuple[bool, SingleInstanceGuard]:
     """
     Block startup when another instance is already running.
 
+    :param quiet: Skip focusing the running instance and the message dialog,
+        used for unattended launches such as the login autostart entry
     :return: Tuple of (may_continue, lock_guard)
     """
     guard = SingleInstanceGuard()
     if guard.acquire():
         return True, guard
+
+    if quiet:
+        return False, guard
 
     focused_existing = request_show_existing_instance()
     show_already_running_message(focused_existing=focused_existing)

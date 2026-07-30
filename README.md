@@ -18,6 +18,7 @@ A desktop GUI to **start, stop and restart local development servers** — PHP b
 - **Live log view** — tail stdout/stderr of the selected server in the window
 - **Save visible log output** — export the currently shown log text to a `.txt` file
 - **System tray** — closing the window keeps the app running in the tray; use **File → Close and Exit** or the tray menu to quit
+- **Start on login** — optional autostart entry that launches the app into the system tray only, without opening the window (**Settings → Preferences**)
 - **CPU and memory columns** — see per-server resource usage in the server list (refresh interval configurable in **Settings → Preferences**)
 - **Context menu** — right-click a server for start, stop, restart, open website, edit, and remove
 - **Edit running servers** — change configuration while a server is running; saving prompts to restart when needed
@@ -69,7 +70,8 @@ Choose a working directory with an optional hidden-files toggle when browsing fo
 
 ### Preferences
 
-Configure how often CPU and memory values are refreshed in the server list.
+Configure how often CPU and memory values are refreshed in the server list, and whether the app
+starts into the system tray on login.
 
 ![Preferences](docs/screenshots/preferences.png)
 
@@ -94,6 +96,26 @@ python3 installer.py
 On first start you are asked once whether to create a desktop shortcut. You can also create it from **Help → Create Desktop Shortcut...**.
 
 The installer checks Python, tkinter, and `fuser`, and sets the executable bit on the main script if needed.
+
+### Command-line options
+
+| Option | Effect |
+|--------|--------|
+| `--tray` (aliases: `--minimized`, `--hidden`) | Start without opening the main window — the app is only present in the system tray. Autostart-flagged servers still start, and the window opens from the tray icon or by launching the app again. |
+| `-h`, `--help` | Show all available options |
+
+### Start on login
+
+Enable **Settings → Preferences... → Start DevServer Commander on login** to install
+`~/.config/autostart/devserver-commander.desktop`. That entry launches the app with `--tray`, so at
+login it appears in the system tray only, starts the autostart-flagged servers in the background, and
+never pops up a window. Unchecking the option removes the entry again.
+
+A `--tray` launch while another instance is already running exits silently instead of showing the
+"already running" dialog, so a duplicate login autostart never interrupts you.
+
+If GTK3 bindings are missing, tray support is unavailable; `--tray` then falls back to showing the
+window so the app cannot become unreachable.
 
 ## Project structure
 
@@ -130,7 +152,8 @@ devserver-commander/
 │   ├── port_info.py                # Describes which process is using a TCP port
 │   ├── ports.py                    # Low-level TCP port availability checks
 │   ├── single_instance.py          # Prevents multiple application instances from running
-│   └── instance_ipc.py             # Unix socket used to raise the existing window on relaunch
+│   ├── instance_ipc.py             # Unix socket used to raise the existing window on relaunch
+│   └── cli_args.py                 # Parses command-line options such as --tray for the login autostart
 │
 ├── ui/                             # Tkinter windows, dialogs, and desktop integration
 │   ├── __init__.py                 # Public exports for the UI package
@@ -138,7 +161,7 @@ devserver-commander/
 │   ├── project_dialog.py           # Add/Edit dialog for PHP, Node.js, and custom server commands
 │   ├── directory_picker.py         # Custom directory chooser with hidden-folder support
 │   ├── preferences_dialog.py     # Preferences dialog for application-wide settings
-│   ├── desktop_setup.py            # First-run prompt and desktop shortcut creation
+│   ├── desktop_setup.py            # First-run prompt, desktop shortcut creation, and login autostart entry
 │   ├── window_icon.py              # Applies the application icon to windows and dialogs
 │   ├── tray.py                     # GTK3 system tray icon with show and exit actions
 │   └── startup_notify.py           # Clears the desktop busy cursor after launch
@@ -167,6 +190,7 @@ devserver-commander/
 | Path | Purpose |
 |------|---------|
 | `~/.config/devserver-commander/settings.json` | Persisted application preferences |
+| `~/.config/autostart/devserver-commander.desktop` | Login autostart entry; launches the app with `--tray` (only present while "Start on login" is enabled) |
 | `~/.local/state/devserver-commander/logs/` | Per-server stdout/stderr log files |
 | `~/.local/state/devserver-commander/instance.lock` | Single-instance lock file while the app is running |
 | `~/.local/state/devserver-commander/control.sock` | Control socket used to raise the existing window on relaunch |
@@ -230,6 +254,8 @@ MailHog and Mailpit are installed to `~/.local/share/devserver-commander/bin/` w
 | Hide to tray | Close the window or **File → Close** |
 | Quit completely | **File → Close and Exit** or tray menu **Exit** |
 | CPU/memory refresh | **Settings → Preferences...** |
+| Start on login (tray only) | **Settings → Preferences...**, enable **Start DevServer Commander on login** |
+| Start into the tray manually | `./devserver_commander.py --tray` |
 | Install PHP | In the project dialog: **Install...** next to the PHP version dropdown |
 | Install MailHog / Mailpit | In the project dialog: **Install...** next to the custom command field |
 | Browse with hidden folders | **Browse...** in the project dialog, then enable the checkbox |
