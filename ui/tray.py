@@ -4,6 +4,9 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+PROGRAM_NAME = "devserver-commander"
+APPLICATION_NAME = "DevServer Commander"
+
 
 class TrayIcon:
     """GTK3 status icon that keeps the app available from the system tray."""
@@ -20,6 +23,7 @@ class TrayIcon:
         self._on_show = on_show
         self._on_exit = on_exit
         self._thread: Optional[threading.Thread] = None
+        self._icon = None
 
     def start(self) -> bool:
         """
@@ -39,7 +43,12 @@ class TrayIcon:
         return True
 
     def _run(self) -> None:
-        from gi.repository import Gdk, Gtk
+        from gi.repository import Gdk, GLib, Gtk
+
+        # Without this, GTK derives the name from the launch script and the tray
+        # icon identifies itself as "run.py" to the desktop environment.
+        GLib.set_prgname(PROGRAM_NAME)
+        GLib.set_application_name(APPLICATION_NAME)
 
         try:
             Gdk.notify_startup_complete()
@@ -47,6 +56,7 @@ class TrayIcon:
             pass
 
         icon = Gtk.StatusIcon()
+        self._icon = icon
         if self._icon_path.is_file():
             icon.set_from_file(str(self._icon_path))
         icon.set_tooltip_text(self._tooltip)
@@ -55,6 +65,35 @@ class TrayIcon:
         icon.set_visible(True)
 
         Gtk.main()
+
+    def set_tooltip(self, tooltip: str) -> None:
+        """
+        Update the tray tooltip, e.g. to show how many servers are running.
+
+        Safe to call from the Tk thread: the change is applied inside the GTK
+        main loop.
+
+        :param tooltip: New tooltip text
+        :return: None
+        """
+        if tooltip == self._tooltip:
+            return
+
+        self._tooltip = tooltip
+        if self._icon is None:
+            return
+
+        try:
+            from gi.repository import GLib
+        except (ImportError, ValueError):
+            return
+
+        GLib.idle_add(self._apply_tooltip)
+
+    def _apply_tooltip(self) -> bool:
+        if self._icon is not None:
+            self._icon.set_tooltip_text(self._tooltip)
+        return False
 
     def _handle_show(self, *_args) -> None:
         self._on_show()

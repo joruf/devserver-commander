@@ -19,6 +19,8 @@ A desktop GUI to **start, stop and restart local development servers** — PHP b
 - **Save visible log output** — export the currently shown log text to a `.txt` file
 - **System tray** — closing the window keeps the app running in the tray; use **File → Close and Exit** or the tray menu to quit
 - **Start on login** — optional autostart entry that launches the app into the system tray only, without opening the window (**Settings → Preferences**)
+- **Crash notifications** — desktop notification when a server stops without being asked to, so failures are visible while the window is hidden
+- **Automatic restart** — optionally restart crashed servers with a 2s / 5s / 15s backoff before giving up (**Settings → Preferences**)
 - **CPU and memory columns** — see per-server resource usage in the server list (refresh interval configurable in **Settings → Preferences**)
 - **Context menu** — right-click a server for start, stop, restart, open website, edit, and remove
 - **Edit running servers** — change configuration while a server is running; saving prompts to restart when needed
@@ -70,8 +72,8 @@ Choose a working directory with an optional hidden-files toggle when browsing fo
 
 ### Preferences
 
-Configure how often CPU and memory values are refreshed in the server list, and whether the app
-starts into the system tray on login.
+Configure how often CPU and memory values are refreshed in the server list, whether crashed servers
+are reported and restarted, and whether the app starts into the system tray on login.
 
 ![Preferences](docs/screenshots/preferences.png)
 
@@ -81,6 +83,7 @@ starts into the system tray on login.
 - Python 3.10+ with tkinter (usually pre-installed; on Debian/Ubuntu: `sudo apt install python3-tk`)
 - `fuser` from `psmisc` (used to stop servers that were not started by DevServer Commander; on Debian/Ubuntu: `sudo apt install psmisc`)
 - Optional: GTK3 Python bindings for the system tray (on Debian/Ubuntu: `sudo apt install gir1.2-gtk-3.0`)
+- Optional: `notify-send` from `libnotify-bin` for crash notifications (on Debian/Ubuntu: `sudo apt install libnotify-bin`)
 - Optional: ImageMagick `import` and `scrot` (only needed to regenerate README screenshots)
 
 ## Installation & Usage
@@ -88,9 +91,9 @@ starts into the system tray on login.
 ```bash
 git clone https://github.com/joruf/devserver-commander.git
 cd devserver-commander
-chmod +x devserver_commander.py installer.py
+chmod +x run.py installer.py
 python3 installer.py
-./devserver_commander.py
+./run.py
 ```
 
 On first start you are asked once whether to create a desktop shortcut. You can also create it from **Help → Create Desktop Shortcut...**.
@@ -117,11 +120,28 @@ A `--tray` launch while another instance is already running exits silently inste
 If GTK3 bindings are missing, tray support is unavailable; `--tray` then falls back to showing the
 window so the app cannot become unreachable.
 
+### Crash notifications and automatic restart
+
+Every two seconds the app checks whether a managed server ended without a stop request. Such an exit
+is written into the server's log file (`--- exited unexpectedly: ended with exit code 7 ---`), shown
+in the status bar, and — with **Notify when a server stops unexpectedly** enabled (default) — sent as
+a desktop notification via `notify-send`. That matters most in tray-only operation, where a dead
+server would otherwise go unnoticed.
+
+With **Restart crashed servers automatically** enabled, the server is restarted after 2s, then 5s,
+then 15s. If it keeps crashing, the app gives up and says so instead of looping forever. A server
+that stays up for 60 seconds counts as healthy again and gets the full set of attempts next time.
+Starting, stopping or restarting a server yourself cancels any pending automatic restart, and both
+notifications and restarts stay silent about servers you started outside the app
+("Running (unmanaged)").
+
+The tray tooltip shows how many of the configured servers are currently running.
+
 ## Project structure
 
 ```
 devserver-commander/
-├── devserver_commander.py          # Application entry point; starts the GUI
+├── run.py                          # Application entry point; starts the GUI
 ├── installer.py                    # Checks Python, tkinter, fuser, and GTK3; sets executable permissions
 ├── paths.py                        # Central path constants for config, icons, desktop files, and resources
 ├── servers.json                    # User-defined server list persisted as JSON
@@ -143,12 +163,13 @@ devserver-commander/
 │
 ├── services/                       # Business logic without UI dependencies
 │   ├── __init__.py                 # Public exports for the services package
-│   ├── process.py                  # Starts, stops, restarts processes; manages log file paths
+│   ├── process.py                  # Starts, stops, restarts processes; detects crashes; manages log file paths
 │   ├── php.py                      # PHP version detection, command building, and install helpers
 │   ├── node.py                     # Node.js command building and npm/npx/node detection helpers
 │   ├── server_types.py             # Detects whether a stored command is PHP, Node.js, or custom
 │   ├── dev_tools.py                # One-click download/install helpers for MailHog and Mailpit
 │   ├── stats.py                    # CPU and memory usage via /proc; port-to-PID lookup
+│   ├── notifications.py            # Desktop notifications via notify-send for events behind a hidden window
 │   ├── port_info.py                # Describes which process is using a TCP port
 │   ├── ports.py                    # Low-level TCP port availability checks
 │   ├── single_instance.py          # Prevents multiple application instances from running
@@ -226,6 +247,19 @@ All servers are stored in `servers.json` in the project directory:
 
 Log files are written to `~/.local/state/devserver-commander/logs/` and persist even when the GUI is closed.
 
+Application preferences live separately in `$XDG_CONFIG_HOME/devserver-commander/settings.json`
+(`~/.config/...` by default) and are written by **Settings → Preferences...**:
+
+```json
+{
+  "stats_refresh_interval_seconds": 5,
+  "notify_on_server_crash": true,
+  "restart_crashed_servers": false
+}
+```
+
+Keys missing from an older file fall back to these defaults.
+
 ## Server templates
 
 When adding a project, choose a template to pre-fill the dialog:
@@ -255,7 +289,8 @@ MailHog and Mailpit are installed to `~/.local/share/devserver-commander/bin/` w
 | Quit completely | **File → Close and Exit** or tray menu **Exit** |
 | CPU/memory refresh | **Settings → Preferences...** |
 | Start on login (tray only) | **Settings → Preferences...**, enable **Start DevServer Commander on login** |
-| Start into the tray manually | `./devserver_commander.py --tray` |
+| Start into the tray manually | `./run.py --tray` |
+| Crash notifications / auto-restart | **Settings → Preferences...** |
 | Install PHP | In the project dialog: **Install...** next to the PHP version dropdown |
 | Install MailHog / Mailpit | In the project dialog: **Install...** next to the custom command field |
 | Browse with hidden folders | **Browse...** in the project dialog, then enable the checkbox |

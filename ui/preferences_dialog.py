@@ -5,11 +5,15 @@ from tkinter import messagebox, ttk
 from typing import Optional
 
 from config.app_settings import (
+    CRASH_RESTART_DELAYS_SECONDS,
     MAX_STATS_REFRESH_INTERVAL_SECONDS,
     MIN_STATS_REFRESH_INTERVAL_SECONDS,
     AppSettings,
 )
+from services.notifications import notifications_available
 from ui.window_icon import apply_window_icon
+
+RESTART_DELAYS_LABEL = ", ".join(f"{delay}s" for delay in CRASH_RESTART_DELAYS_SECONDS)
 
 
 class PreferencesDialog(tk.Toplevel):
@@ -59,21 +63,51 @@ class PreferencesDialog(tk.Toplevel):
             pady=(10, 6),
         )
 
+        self.notify_on_crash_var = tk.BooleanVar(master=self, value=settings.notify_on_server_crash)
+        ttk.Checkbutton(
+            frame,
+            text="Notify when a server stops unexpectedly",
+            variable=self.notify_on_crash_var,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", **pad)
+
+        self.restart_crashed_var = tk.BooleanVar(master=self, value=settings.restart_crashed_servers)
+        ttk.Checkbutton(
+            frame,
+            text="Restart crashed servers automatically",
+            variable=self.restart_crashed_var,
+        ).grid(row=4, column=0, columnspan=2, sticky="w", **pad)
+
+        ttk.Label(
+            frame,
+            text=f"Restart delays: {RESTART_DELAYS_LABEL}, then the server is left stopped."
+            + ("" if notifications_available() else "\nDesktop notifications need the 'notify-send' command."),
+            foreground="gray",
+        ).grid(row=5, column=0, columnspan=2, sticky="w", **pad)
+
+        ttk.Separator(frame, orient="horizontal").grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=8,
+            pady=(10, 6),
+        )
+
         self.login_autostart_var = tk.BooleanVar(master=self, value=login_autostart)
         ttk.Checkbutton(
             frame,
             text="Start DevServer Commander on login",
             variable=self.login_autostart_var,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", **pad)
+        ).grid(row=7, column=0, columnspan=2, sticky="w", **pad)
 
         ttk.Label(
             frame,
             text="On login the application starts in the system tray only, without opening the window.",
             foreground="gray",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", **pad)
+        ).grid(row=8, column=0, columnspan=2, sticky="w", **pad)
 
         button_frame = ttk.Frame(frame)
-        button_frame.grid(row=5, column=0, columnspan=2, pady=(12, 8))
+        button_frame.grid(row=9, column=0, columnspan=2, pady=(12, 8))
         ttk.Button(button_frame, text="Save", style="Primary.TButton", command=self._on_save).pack(side="left", padx=4)
         ttk.Button(button_frame, text="Cancel", command=self._on_cancel).pack(side="left", padx=4)
 
@@ -102,7 +136,11 @@ class PreferencesDialog(tk.Toplevel):
             )
             return
 
-        self.result = AppSettings(stats_refresh_interval_seconds=interval)
+        self.result = AppSettings(
+            stats_refresh_interval_seconds=interval,
+            notify_on_server_crash=bool(self.notify_on_crash_var.get()),
+            restart_crashed_servers=bool(self.restart_crashed_var.get()),
+        )
         self.login_autostart_result = bool(self.login_autostart_var.get())
         self.destroy()
 

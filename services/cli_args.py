@@ -22,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     :return: Parser accepting the supported launch options
     """
     parser = argparse.ArgumentParser(
-        prog="devserver_commander.py",
+        prog="run.py",
         description="Start, stop and restart local development servers.",
     )
     parser.add_argument(

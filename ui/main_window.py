@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Dict, Optional, Sequence, Tuple
 
 from config import AppSettingsManager, ConfigManager
+from config.app_settings import CRASH_RESTART_DELAYS_SECONDS, CRASH_RESTART_STABLE_SECONDS
 from config.validation import make_unique_project_name
 from models import ServerProject
 from paths import AUTOSTART_FILE, ICON_FILE
@@ -17,8 +18,9 @@ from services.php import (
     extract_router_from_command,
     is_php_builtin_command,
 )
+from services.notifications import send_desktop_notification
 from services.port_scan import ScannedPort, read_process_cwd, suggest_command_for_port
-from services.process import ServerProcess, log_path_for
+from services.process import ServerProcess, describe_exit, log_path_for
 from services.server_types import server_type_label_for_command
 from services.cli_args import parse_args
 from services.instance_ipc import InstanceControlServer
@@ -110,6 +112,8 @@ class MainWindow(tk.Tk):
         self._config_mtime_seen = self._config_mtime()
         self._last_display_snapshot: Optional[tuple] = None
         self._list_poll_job_id: Optional[str] = None
+        self._restart_attempts: Dict[str, int] = {}
+        self._pending_restart_jobs: Dict[str, str] = {}
 
         self._configure_ui_style()
         self._build_menu()
@@ -582,6 +586,8 @@ class MainWindow(tk.Tk):
         current_names = {project.name for project in self.projects}
         for name in list(self.processes):
             if name not in current_names:
+                self._cancel_pending_restart(name)
+                self._restart_attempts.pop(name, None)
                 del self.processes[name]
                 self._log_offsets.pop(name, None)
 
@@ -994,9 +1000,169 @@ class MainWindow(tk.Tk):
         :return: None
         """
         reloaded = self._reload_projects_from_disk()
-        self._refresh_tree_if_changed(force=reloaded)
+        crashed = self._check_for_unexpected_exits()
+        self._refresh_tree_if_changed(force=reloaded or crashed)
         self._refresh_log_tail()
+        self._update_tray_tooltip()
         self._schedule_list_poll()
+
+    def _notify(self, title: str, message: str, urgency: str = "normal") -> None:
+        """
+        Show a desktop notification and mirror it in the status bar.
+
+        :param title: Notification summary line
+        :param message: Notification body text
+        :param urgency: Urgency hint (low, normal, critical)
+        :return: None
+        """
+        self._set_status(message)
+        if not self.app_settings.notify_on_server_crash:
+            return
+        send_desktop_notification(title, message, urgency=urgency, icon=ICON_FILE)
+
+    def _check_for_unexpected_exits(self) -> bool:
+        """
+        Report servers that stopped without being asked to, and restart them if configured.
+
+        :return: True when at least one unexpected exit was handled
+        """
+        handled = False
+        for project in list(self.projects):
+            process = self.processes.get(project.name)
+            if process is None:
+                continue
+
+            running = process.is_running()
+            if running:
+                self._forget_stable_server(project.name, process)
+                continue
+
+            exit_code = process.take_unexpected_exit()
+            if exit_code is None:
+                continue
+
+            self._handle_unexpected_exit(project.name, exit_code)
+            handled = True
+
+        return handled
+
+    def _forget_stable_server(self, name: str, process: ServerProcess) -> None:
+        """
+        Reset the crash counter once a restarted server has been stable for a while.
+
+        :param name: Project name
+        :param process: Managed process of that project
+        :return: None
+        """
+        if name not in self._restart_attempts:
+            return
+
+        uptime = process.uptime_seconds
+        if uptime is not None and uptime >= CRASH_RESTART_STABLE_SECONDS:
+            del self._restart_attempts[name]
+
+    def _handle_unexpected_exit(self, name: str, exit_code: int) -> None:
+        """
+        Notify about a crashed server and schedule a restart when enabled.
+
+        :param name: Project name of the crashed server
+        :param exit_code: Exit status as reported by the process
+        :return: None
+        """
+        description = describe_exit(exit_code)
+
+        if not self.app_settings.restart_crashed_servers:
+            self._notify("Server stopped", f"'{name}' {description}.", urgency="critical")
+            return
+
+        attempt = self._restart_attempts.get(name, 0)
+        if attempt >= len(CRASH_RESTART_DELAYS_SECONDS):
+            self._notify(
+                "Server stopped",
+                f"'{name}' {description}. Giving up after "
+                f"{len(CRASH_RESTART_DELAYS_SECONDS)} restart attempts.",
+                urgency="critical",
+            )
+            return
+
+        delay_seconds = CRASH_RESTART_DELAYS_SECONDS[attempt]
+        self._restart_attempts[name] = attempt + 1
+        self._notify(
+            "Server stopped",
+            f"'{name}' {description}. Restarting in {delay_seconds}s "
+            f"(attempt {attempt + 1}/{len(CRASH_RESTART_DELAYS_SECONDS)}).",
+            urgency="critical",
+        )
+        self._cancel_pending_restart(name)
+        self._pending_restart_jobs[name] = self.after(
+            delay_seconds * 1000,
+            lambda project_name=name: self._restart_after_crash(project_name),
+        )
+
+    def _restart_after_crash(self, name: str) -> None:
+        """
+        Restart a crashed server without opening dialogs the user cannot see.
+
+        :param name: Project name to restart
+        :return: None
+        """
+        self._pending_restart_jobs.pop(name, None)
+        process = self.processes.get(name)
+        if process is None or process.is_running():
+            return
+
+        attempt = self._restart_attempts.get(name, 0)
+        try:
+            process.start()
+        except Exception as exc:  # noqa: BLE001 - reported instead of crashing the poll loop
+            process.append_log_note(f"restart attempt {attempt} failed: {exc}")
+            self._notify(
+                "Restart failed",
+                f"Could not restart '{name}': {exc}",
+                urgency="critical",
+            )
+        else:
+            process.append_log_note(f"restarted automatically (attempt {attempt})")
+            self._notify("Server restarted", f"'{name}' was restarted automatically.")
+
+        self._refresh_tree()
+
+    def _cancel_pending_restart(self, name: str) -> None:
+        """
+        Cancel a scheduled crash restart, e.g. because the user acted first.
+
+        :param name: Project name whose pending restart is dropped
+        :return: None
+        """
+        job_id = self._pending_restart_jobs.pop(name, None)
+        if job_id is not None:
+            self.after_cancel(job_id)
+
+    def _cancel_all_pending_restarts(self) -> None:
+        """
+        Cancel every scheduled crash restart, used when shutting down.
+
+        :return: None
+        """
+        for name in list(self._pending_restart_jobs):
+            self._cancel_pending_restart(name)
+
+    def _update_tray_tooltip(self) -> None:
+        """
+        Show how many servers are running in the tray tooltip.
+
+        :return: None
+        """
+        if self._tray_icon is None:
+            return
+
+        running = sum(
+            1
+            for project in self.projects
+            if (process := self.processes.get(project.name)) is not None and process.is_running()
+        )
+        total = len(self.projects)
+        self._tray_icon.set_tooltip(f"DevServer Commander\n{running}/{total} servers running")
 
     def _on_manual_refresh(self, _event=None) -> Optional[str]:
         """
@@ -1385,6 +1551,8 @@ class MainWindow(tk.Tk):
 
         index = self.projects.index(project)
         self.projects[index] = dialog.result
+        self._cancel_pending_restart(name)
+        self._restart_attempts.pop(name, None)
         del self.processes[name]
         self.processes[dialog.result.name] = ServerProcess(dialog.result)
         if name in self._unsaved_names:
@@ -1412,6 +1580,8 @@ class MainWindow(tk.Tk):
         if not messagebox.askyesno("Remove Project", f"Remove '{name}' from the project list?"):
             return
 
+        self._cancel_pending_restart(name)
+        self._restart_attempts.pop(name, None)
         self.projects = [project for project in self.projects if project.name != name]
         del self.processes[name]
         self._unsaved_names.discard(name)
@@ -1524,6 +1694,8 @@ class MainWindow(tk.Tk):
         name = self._selected_project_name()
         if not name:
             return
+        self._cancel_pending_restart(name)
+        self._restart_attempts.pop(name, None)
         try:
             self.processes[name].restart()
             self._set_status(f"Restarted '{name}'.")
@@ -1531,16 +1703,31 @@ class MainWindow(tk.Tk):
             messagebox.showerror("Restart Failed", str(exc))
         self._refresh_tree()
 
-    def _start_project(self, name: str) -> bool:
+    def _start_project(self, name: str, *, notify_on_failure: bool = False) -> bool:
+        """
+        Start one server and report failures to the user.
+
+        :param name: Project name to start
+        :param notify_on_failure: Report failures as a desktop notification instead of
+            a modal dialog, for starts that happen while the window may be hidden
+        :return: True when the server was started
+        """
+        self._cancel_pending_restart(name)
+        self._restart_attempts.pop(name, None)
         try:
             self.processes[name].start()
             self._set_status(f"Started '{name}'.")
             return True
         except Exception as exc:  # noqa: BLE001 - surfaced to the user, not swallowed
-            messagebox.showerror("Start Failed", f"Could not start '{name}':\n{exc}")
+            if notify_on_failure:
+                self._notify("Start failed", f"Could not start '{name}': {exc}", urgency="critical")
+            else:
+                messagebox.showerror("Start Failed", f"Could not start '{name}':\n{exc}")
             return False
 
     def _stop_project(self, name: str) -> None:
+        self._cancel_pending_restart(name)
+        self._restart_attempts.pop(name, None)
         try:
             self.processes[name].stop()
             self._set_status(f"Stopped '{name}'.")
@@ -1551,11 +1738,12 @@ class MainWindow(tk.Tk):
         started = []
         for project in self.projects:
             if project.autostart and not self.processes[project.name].is_running():
-                if self._start_project(project.name):
+                if self._start_project(project.name, notify_on_failure=self._start_in_tray):
                     started.append(project.name)
         if started:
             self._set_status(f"Autostarted: {', '.join(started)}")
         self._refresh_tree()
+        self._update_tray_tooltip()
 
     def _save(self) -> None:
         """Persist all projects except unsaved trial entries from the port scanner."""
@@ -1577,6 +1765,9 @@ class MainWindow(tk.Tk):
         self.settings_manager.save(self.app_settings)
         self._schedule_stats_poll()
         self._apply_login_autostart(dialog.login_autostart_result)
+        if not self.app_settings.restart_crashed_servers:
+            self._cancel_all_pending_restarts()
+            self._restart_attempts.clear()
         self._set_status(
             "Preferences saved. CPU and memory values refresh every "
             f"{self.app_settings.stats_refresh_interval_seconds} seconds."
@@ -1708,6 +1899,7 @@ class MainWindow(tk.Tk):
             return
 
         self._exiting = True
+        self._cancel_all_pending_restarts()
         if self._control_server is not None:
             self._control_server.stop()
             self._control_server = None

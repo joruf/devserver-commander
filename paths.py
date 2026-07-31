@@ -15,7 +15,7 @@ AUTOSTART_DIR = CONFIG_HOME / "autostart"
 
 CONFIG_FILE = PROJECT_ROOT / "servers.json"
 INIT_FILE = PROJECT_ROOT / ".initialized"
-MAIN_SCRIPT = PROJECT_ROOT / "devserver_commander.py"
+MAIN_SCRIPT = PROJECT_ROOT / "run.py"
 DESKTOP_TEMPLATE = RESOURCES_DIR / "devserver-commander.desktop"
 DESKTOP_FILENAME = "DevServer Commander.desktop"
 AUTOSTART_FILENAME = "devserver-commander.desktop"

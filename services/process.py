@@ -36,6 +36,27 @@ def format_launch_command(command: str, env: Optional[Dict[str, str]] = None) ->
     return f"{prefix} {command}"
 
 
+def describe_exit(exit_code: Optional[int]) -> str:
+    """
+    Describe a process exit status in words for logs and notifications.
+
+    :param exit_code: Return code from Popen.poll(); negative values mean a signal
+    :return: Human-readable description of how the process ended
+    """
+    if exit_code is None:
+        return "ended for an unknown reason"
+    if exit_code == 0:
+        return "ended with exit code 0"
+    if exit_code < 0:
+        signal_number = -exit_code
+        try:
+            signal_name = signal.Signals(signal_number).name
+        except ValueError:
+            return f"was killed by signal {signal_number}"
+        return f"was killed by {signal_name} ({signal_number})"
+    return f"ended with exit code {exit_code}"
+
+
 def kill_by_port(port: int) -> bool:
     """Best-effort kill of whatever process is listening on the given port."""
     try:
@@ -56,6 +77,9 @@ class ServerProcess:
         self.project = project
         self._popen: Optional[subprocess.Popen] = None
         self._unmanaged = False
+        self._stop_requested = False
+        self._unexpected_exit: Optional[int] = None
+        self._started_at: Optional[float] = None
 
     @property
     def unmanaged(self) -> bool:
@@ -66,12 +90,66 @@ class ServerProcess:
         if self._popen is not None:
             if self._popen.poll() is None:
                 return True
-            self._popen = None
+            self._reap_finished_process()
             return False
         if self.project.port is not None and is_port_open(self.project.port):
             self._unmanaged = True
             return True
         return False
+
+    def _reap_finished_process(self) -> None:
+        """
+        Clear the finished process and remember terminations nobody asked for.
+
+        :return: None
+        """
+        exit_code = self._popen.poll() if self._popen is not None else None
+        self._popen = None
+        self._started_at = None
+
+        if self._stop_requested:
+            self._stop_requested = False
+            return
+
+        self._unexpected_exit = exit_code
+        self.append_log_note(f"exited unexpectedly: {describe_exit(exit_code)}")
+
+    def take_unexpected_exit(self) -> Optional[int]:
+        """
+        Consume the exit status of a termination that was not requested.
+
+        Each unexpected exit is reported exactly once, so callers can poll this
+        without re-acting on an exit they already handled.
+
+        :return: Exit status of the crashed process, or None when nothing crashed
+        """
+        exit_code, self._unexpected_exit = self._unexpected_exit, None
+        return exit_code
+
+    @property
+    def uptime_seconds(self) -> Optional[float]:
+        """
+        Return how long the managed process has been running.
+
+        :return: Uptime in seconds, or None when no managed process is tracked
+        """
+        if self._started_at is None:
+            return None
+        return time.monotonic() - self._started_at
+
+    def append_log_note(self, note: str) -> None:
+        """
+        Append an application-generated line to this project's log file.
+
+        :param note: Message written between the process output
+        :return: None
+        """
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            with open(log_path_for(self.project), "a", encoding="utf-8") as handle:
+                handle.write(f"--- {note} ---\n")
+        except OSError:
+            pass
 
     @property
     def pid(self) -> Optional[int]:
@@ -147,9 +225,15 @@ class ServerProcess:
         finally:
             log_handle.close()
         self._unmanaged = False
+        self._stop_requested = False
+        self._unexpected_exit = None
+        self._started_at = time.monotonic()
 
     def stop(self, timeout: float = 5.0) -> None:
         """Stop the server: terminate the tracked process group, or kill by port."""
+        self._stop_requested = True
+        self._unexpected_exit = None
+
         if self._popen is not None and self._popen.poll() is None:
             pgid = os.getpgid(self._popen.pid)
             try:
@@ -167,11 +251,14 @@ class ServerProcess:
                 except ProcessLookupError:
                     pass
             self._popen = None
+            self._started_at = None
+            self._stop_requested = False
             return
 
         if self.project.port is not None and is_port_open(self.project.port):
             kill_by_port(self.project.port)
         self._unmanaged = False
+        self._stop_requested = False
 
     def restart(self) -> None:
         """Stop then start the server again."""
