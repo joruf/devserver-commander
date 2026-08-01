@@ -307,6 +307,26 @@ python3 scripts/generate_screenshots.py
 
 Requires a running X11 desktop session plus `import` (ImageMagick) and `scrot`.
 
+## Testing
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+CI runs the unit suite on Ubuntu 22.04/24.04 (Python 3.11 and 3.12) on every push and
+pull request. **Windows is not supported** for this Linux desktop tool, so CI has no
+`windows-latest` job.
+
+### Multi-OS matrix (local Linux host)
+
+```bash
+~/os-test-matrix/bin/test-project /path/to/devserver-commander
+~/os-test-matrix/bin/test-project "$PWD" --only ubuntu-2404
+```
+
+On-demand Linux runners: [`OS Matrix`](.github/workflows/os-matrix.yml).
+Results: `~/os-test-matrix/results/`.
+
 ## License
 
 See [LICENSE](LICENSE).
