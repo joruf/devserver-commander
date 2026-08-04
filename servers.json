@@ -69,5 +69,13 @@
       "env": {},
       "autostart": true
     }
+  ],
+  "services": [
+    {
+      "name": "MariaDB",
+      "unit": "mariadb.service",
+      "port": 3306,
+      "data_directory": "/var/lib/mysql"
+    }
   ]
 }

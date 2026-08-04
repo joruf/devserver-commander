@@ -24,6 +24,7 @@ A desktop GUI to **start, stop and restart local development servers** — PHP b
 - **CPU and memory columns** — see per-server resource usage in the server list (refresh interval configurable in **Settings → Preferences**)
 - **Database services** — list MariaDB, MySQL, PostgreSQL, and Redis next to your servers, start and stop them via `systemctl`, and jump to their data directory
 - **Dependency warning** — stopping a database service warns which development servers are still running, something a plain `systemctl` call cannot tell you
+- **Toolbar tooltips** — every button explains itself on hover, including disabled ones; **Add Server...** and **Add Service...** name each other so the difference is visible where the decision is made
 - **Context menu** — right-click a server for start, stop, restart, open website, edit, and remove
 - **Edit running servers** — change configuration while a server is running; saving prompts to restart when needed
 - **Port conflict details** — clear error messages with PID and process name when a port is already in use
@@ -192,6 +193,7 @@ devserver-commander/
 │   ├── directory_picker.py         # Custom directory chooser with hidden-folder support
 │   ├── preferences_dialog.py     # Preferences dialog for application-wide settings
 │   ├── desktop_setup.py            # First-run prompt, desktop shortcut creation, and login autostart entry
+│   ├── tooltip.py                  # Hover tooltips that stay on screen and work on disabled widgets
 │   ├── window_icon.py              # Applies the application icon to windows and dialogs
 │   ├── tray.py                     # GTK3 system tray icon with show and exit actions
 │   └── startup_notify.py           # Clears the desktop busy cursor after launch
@@ -301,6 +303,19 @@ not a per-project child process: it is system-wide infrastructure owned by syste
 running as its own user. It therefore gets its own entry type instead of being
 squeezed into a server entry.
 
+That is the difference between the two add buttons, and both tooltips say so on hover:
+
+| | **Add Server...** | **Add Service...** |
+|---|---|---|
+| What it is | Your own project | Shared system infrastructure |
+| Who runs it | This application, as a child process | systemd, as its own user |
+| Needs a command | Yes | No |
+| Needs a directory | Yes, the project directory | No; the data directory is detected |
+| Started with | `Popen` in its own process group | `systemctl`, with polkit authorization |
+| Starts at boot | Optional autostart checkbox | systemd decides; not changed here |
+| Can be edited | Yes | No, the catalog defines it |
+| Examples | PHP built-in server, Node.js app, Mailpit | MariaDB, MySQL, PostgreSQL, Redis |
+
 Click **Add Service...** to list the supported services that are installed on this
 machine:
 
@@ -371,8 +386,9 @@ configuration instead. Declining the offer still opens the normal server dialog.
 
 | Action | How |
 |--------|-----|
-| Add server | **Add** button, then choose a **Template** preset |
+| Add server | **Add Server...** button, then choose a **Template** preset |
 | Add database service | **Add Service...** button, then pick a detected service |
+| See what a button does | Hover it — every toolbar button has a tooltip, including greyed-out ones |
 | Edit server | Select entry, then **Edit**, double-click, or right-click **Edit...** |
 | Start / stop / restart | Toolbar buttons or right-click context menu |
 | Open website | **Open Website** button or right-click context menu |

@@ -407,6 +407,56 @@ class ServiceRowTests(unittest.TestCase):
         width = int(self.window.geometry().split("x")[0])
         self.assertGreaterEqual(width, self.window._required_toolbar_width())
 
+    def test_minimum_width_never_exceeds_the_screen(self) -> None:
+        """A minimum size wider than the display would be impossible to satisfy."""
+        self.window.update_idletasks()
+        self.assertLessEqual(
+            self.window._minimum_window_width(),
+            self.window.winfo_screenwidth(),
+        )
+
+    def test_add_buttons_are_named_distinctly(self) -> None:
+        """"Add" alone was ambiguous once services existed."""
+        self.assertEqual(str(self.window.btn_add_server["text"]), "Add Server...")
+        self.assertEqual(str(self.window.btn_add_service["text"]), "Add Service...")
+
+    def test_each_toolbar_button_explains_itself(self) -> None:
+        buttons = (
+            self.window.btn_add_server,
+            self.window.btn_add_service,
+            self.window.btn_edit,
+            self.window.btn_remove,
+            self.window.btn_save_entry,
+            self.window.btn_start,
+            self.window.btn_stop,
+            self.window.btn_restart,
+            self.window.btn_open,
+            self.window.btn_open_data_dir,
+            self.window.btn_port_scanner,
+        )
+        for button in buttons:
+            with self.subTest(button=str(button["text"])):
+                # A tooltip binds <Enter>; without one the button stays unexplained.
+                self.assertTrue(button.bind("<Enter>"))
+
+    def test_add_tooltips_name_the_other_button(self) -> None:
+        """Each add button must say when the other one is the right choice."""
+        server_text = self.window._toolbar_tooltips["add_server"].text
+        service_text = self.window._toolbar_tooltips["add_service"].text
+        self.assertIn("Add Service...", server_text)
+        self.assertIn("Add Server...", service_text)
+
+    def test_add_server_tooltip_describes_a_child_process(self) -> None:
+        text = self.window._toolbar_tooltips["add_server"].text
+        self.assertIn("child process", text)
+        self.assertIn("start command", text)
+
+    def test_add_service_tooltip_describes_systemd_ownership(self) -> None:
+        text = self.window._toolbar_tooltips["add_service"].text
+        self.assertIn("systemd", text)
+        self.assertIn("no start command", text)
+        self.assertIn("boot", text)
+
 
 class _FakeMonitor:
     """Stands in for ServiceMonitor without calling systemctl."""

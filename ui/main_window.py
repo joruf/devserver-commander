@@ -43,6 +43,7 @@ from ui.preferences_dialog import PreferencesDialog
 from ui.project_dialog import ProjectDialog
 from ui.service_dialog import AddServiceDialog
 from ui.startup_notify import notify_desktop_startup_complete
+from ui.tooltip import Tooltip, add_tooltip
 from ui.tray import TrayIcon
 from ui.tree_sort import TreeSorter
 from ui.window_icon import apply_window_icon
@@ -322,8 +323,14 @@ class MainWindow(tk.Tk):
         self.toolbar = toolbar
         toolbar.pack(side="top", fill="x", padx=8, pady=6)
 
-        ttk.Button(toolbar, text="Add", style="Primary.TButton", command=self._add_project).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="Add Service...", command=self._add_service).pack(side="left", padx=2)
+        self.btn_add_server = ttk.Button(
+            toolbar, text="Add Server...", style="Primary.TButton", command=self._add_project
+        )
+        self.btn_add_server.pack(side="left", padx=2)
+        self.btn_add_service = ttk.Button(
+            toolbar, text="Add Service...", command=self._add_service
+        )
+        self.btn_add_service.pack(side="left", padx=2)
         self.btn_edit = ttk.Button(toolbar, text="Edit", command=self._edit_project)
         self.btn_edit.pack(side="left", padx=2)
         self.btn_remove = ttk.Button(toolbar, text="Remove", command=self._remove_project)
@@ -351,7 +358,11 @@ class MainWindow(tk.Tk):
             command=self._open_selected_data_directory,
         )
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Button(toolbar, text="Port Scanner...", command=self._open_port_scanner).pack(side="left", padx=2)
+        self.btn_port_scanner = ttk.Button(
+            toolbar, text="Port Scanner...", command=self._open_port_scanner
+        )
+        self.btn_port_scanner.pack(side="left", padx=2)
+        self._attach_toolbar_tooltips()
 
         paned = ttk.Panedwindow(self, orient="vertical")
         paned.pack(side="top", fill="both", expand=True, padx=8, pady=(0, 8))
@@ -435,6 +446,95 @@ class MainWindow(tk.Tk):
         ttk.Label(self, textvariable=self.status_var, anchor="w", relief="sunken").pack(
             side="bottom", fill="x"
         )
+
+    def _attach_toolbar_tooltips(self) -> None:
+        """
+        Explain each toolbar button on hover.
+
+        The two add buttons name each other, because choosing between a server and
+        a service decides what the entry can do afterwards: one is a child process
+        of this application, the other belongs to systemd.
+        """
+        explanations = (
+            (
+                "add_server",
+                self.btn_add_server,
+                "Add a development server that you start and stop yourself: a PHP "
+                "built-in server, a Node.js app, or any custom command. It runs as a "
+                "child process of this application, so it needs a project directory "
+                "and a start command.\n\n"
+                "For a database, use 'Add Service...' instead.",
+            ),
+            (
+                "add_service",
+                self.btn_add_service,
+                "Add a database or cache service that systemd already manages: "
+                "MariaDB, MySQL, PostgreSQL, or Redis. Installed services are "
+                "detected automatically, so there is no start command and no project "
+                "directory to fill in.\n\n"
+                "Start and stop run through systemctl and ask for authorization. "
+                "Whether the service starts at boot stays with systemd.\n\n"
+                "For your own projects, use 'Add Server...' instead.",
+            ),
+            (
+                "edit",
+                self.btn_edit,
+                "Change the selected server's configuration. Services cannot be "
+                "edited: their unit, port, and data directory come from the system.",
+            ),
+            (
+                "remove",
+                self.btn_remove,
+                "Remove the selected entry from the list. Removing a service only "
+                "takes it off the list; the systemd unit keeps running.",
+            ),
+            (
+                "save_entry",
+                self.btn_save_entry,
+                "Write an entry that was added from the port scanner to "
+                "servers.json, so it is kept permanently.",
+            ),
+            (
+                "start",
+                self.btn_start,
+                "Start the selected entry: a server as a child process of this "
+                "application, a service through systemctl.",
+            ),
+            (
+                "stop",
+                self.btn_stop,
+                "Stop the selected entry. Stopping a service warns first when "
+                "servers are still running that may depend on it.",
+            ),
+            (
+                "restart",
+                self.btn_restart,
+                "Stop the selected entry and start it again.",
+            ),
+            (
+                "open_website",
+                self.btn_open,
+                "Open the selected server's URL in your browser. Not available for "
+                "services, which have no website.",
+            ),
+            (
+                "open_data_dir",
+                self.btn_open_data_dir,
+                "Open the directory where the selected service stores its data, "
+                "detected from the service's own configuration. Shown only while a "
+                "service is selected.",
+            ),
+            (
+                "port_scanner",
+                self.btn_port_scanner,
+                "List TCP ports that are listening but not in this list yet, "
+                "together with the service behind each port.",
+            ),
+        )
+
+        self._toolbar_tooltips: Dict[str, Tooltip] = {
+            key: add_tooltip(button, text) for key, button, text in explanations
+        }
 
     def _build_context_menu(self) -> None:
         self.context_menu = tk.Menu(self, tearoff=False)
@@ -967,10 +1067,7 @@ class MainWindow(tk.Tk):
         if not self._columns_auto_sized:
             self._resize_tree_columns()
             self._fit_window_width_to_tree()
-            self.minsize(
-                max(WINDOW_MIN_WIDTH, self._required_toolbar_width()),
-                WINDOW_MIN_HEIGHT,
-            )
+            self.minsize(self._minimum_window_width(), WINDOW_MIN_HEIGHT)
             self._columns_auto_sized = True
         self._sync_autostart_widgets()
         self._selected_name = self._selected_project_name()
@@ -1104,6 +1201,19 @@ class MainWindow(tk.Tk):
         if not self.btn_open_data_dir.winfo_manager():
             width += self.btn_open_data_dir.winfo_reqwidth() + TOOLBAR_BUTTON_SPACING
         return width + TOOLBAR_OUTER_PADDING
+
+    def _minimum_window_width(self) -> int:
+        """
+        Return the smallest sensible window width.
+
+        The toolbar sets the floor, but never beyond the screen: a minimum size
+        wider than the display would leave the window impossible to fit.
+
+        :return: Minimum window width in pixels
+        """
+        available_width = max(WINDOW_MIN_WIDTH, self.winfo_screenwidth() - WINDOW_SCREEN_MARGIN)
+        wanted = max(WINDOW_MIN_WIDTH, self._required_toolbar_width())
+        return min(wanted, available_width)
 
     def _fit_window_width_to_tree(self) -> None:
         """
