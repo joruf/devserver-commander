@@ -5,13 +5,15 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Dict, List, Optional
 
-from services.port_scan import ScannedPort, scan_listening_ports
+from services.port_scan import ScannedPort, scan_listening_ports, socket_owner_for_port
+from services.well_known_ports import service_name_for_port
 from ui.tree_sort import TreeSorter
 from ui.window_icon import apply_window_icon
 
 COLUMN_HEADINGS = {
     "port": "Port",
     "address": "Address",
+    "service": "Service",
     "process": "Process",
     "pid": "PID",
 }
@@ -60,7 +62,8 @@ class PortScannerDialog(tk.Toplevel):
             self.tree.heading(column_id, text=heading)
         self.tree.column("port", width=70, anchor="w")
         self.tree.column("address", width=140, anchor="w")
-        self.tree.column("process", width=160, anchor="w")
+        self.tree.column("service", width=210, anchor="w")
+        self.tree.column("process", width=150, anchor="w")
         self.tree.column("pid", width=70, anchor="w")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", self._on_row_double_click)
@@ -108,6 +111,7 @@ class PortScannerDialog(tk.Toplevel):
                 values=(
                     scanned.port,
                     scanned.address,
+                    service_name_for_port(scanned.port) or "-",
                     scanned.process_name or "-",
                     scanned.pid if scanned.pid is not None else "-",
                 ),
@@ -117,6 +121,40 @@ class PortScannerDialog(tk.Toplevel):
         self._tree_sorter.reapply()
         self.status_var.set(f"Found {len(self._scanned_ports)} unsaved listening port(s).")
         self._update_take_over_button()
+
+    def _describe_selected_port(self) -> str:
+        """
+        Build the status line for the selected port.
+
+        When the process stays hidden, the owning user account explains why: ``ss``
+        only reports process details for sockets belonging to the calling user.
+
+        :return: Status text, empty when nothing is selected
+        """
+        scanned = self._selected_scanned_port()
+        if scanned is None:
+            return f"Found {len(self._scanned_ports)} unsaved listening port(s)."
+
+        parts = [f"Port {scanned.port}"]
+        service = service_name_for_port(scanned.port)
+        if service:
+            parts.append(f"usually {service}")
+
+        if scanned.process_name:
+            parts.append(f"process {scanned.process_name}")
+            if scanned.pid is not None:
+                parts.append(f"PID {scanned.pid}")
+        else:
+            owner = socket_owner_for_port(scanned.port)
+            if owner:
+                parts.append(
+                    f"owned by user '{owner}', so process details are not readable "
+                    "without root privileges"
+                )
+            else:
+                parts.append("process details are not readable without root privileges")
+
+        return " · ".join(parts)
 
     def _selected_scanned_port(self) -> Optional[ScannedPort]:
         selection = self.tree.selection()
@@ -130,6 +168,7 @@ class PortScannerDialog(tk.Toplevel):
 
     def _on_select(self, _event=None) -> None:
         self._update_take_over_button()
+        self.status_var.set(self._describe_selected_port())
 
     def _on_row_double_click(self, event) -> None:
         row_id = self.tree.identify_row(event.y)

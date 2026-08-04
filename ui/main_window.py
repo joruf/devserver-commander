@@ -1,16 +1,19 @@
 """Main application window."""
 
+import subprocess
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
 from dataclasses import replace
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from config import AppSettingsManager, ConfigManager
 from config.app_settings import CRASH_RESTART_DELAYS_SECONDS, CRASH_RESTART_STABLE_SECONDS
 from config.validation import make_unique_project_name
-from models import ServerProject
+from models import ServerProject, SystemService
 from paths import AUTOSTART_FILE, ICON_FILE
 from services.php import (
     extract_docroot_from_command,
@@ -22,6 +25,8 @@ from services.notifications import send_desktop_notification
 from services.port_scan import ScannedPort, read_process_cwd, suggest_command_for_port
 from services.process import ServerProcess, describe_exit, log_path_for
 from services.server_types import server_type_label_for_command
+from services.systemd import ServiceMonitor, run_unit_action
+from services.well_known_ports import service_name_for_port
 from services.cli_args import parse_args
 from services.instance_ipc import InstanceControlServer
 from services.single_instance import enforce_single_instance
@@ -35,6 +40,7 @@ from ui.desktop_setup import (
 from ui.port_scanner_dialog import PortScannerDialog
 from ui.preferences_dialog import PreferencesDialog
 from ui.project_dialog import ProjectDialog
+from ui.service_dialog import AddServiceDialog
 from ui.startup_notify import notify_desktop_startup_complete
 from ui.tray import TrayIcon
 from ui.tree_sort import TreeSorter
@@ -50,6 +56,11 @@ WINDOW_MIN_WIDTH = 960
 WINDOW_MIN_HEIGHT = 480
 WINDOW_SCREEN_MARGIN = 24
 WINDOW_TREE_EXTRA_WIDTH = 48
+SERVICE_ROW_PREFIX = "service:"
+SERVICE_TYPE_LABEL = "systemd"
+SERVICE_ACTION_POLL_MS = 200
+TOOLBAR_BUTTON_SPACING = 4
+TOOLBAR_OUTER_PADDING = 16
 
 TREE_COLUMN_HEADINGS = {
     "#0": "Name",
@@ -89,9 +100,12 @@ class MainWindow(tk.Tk):
         self.settings_manager = AppSettingsManager()
         self.app_settings = self.settings_manager.load()
         self.projects: list[ServerProject] = self.config_manager.load()
+        self.services: list[SystemService] = self.config_manager.load_services()
         self.processes: Dict[str, ServerProcess] = {
             project.name: ServerProcess(project) for project in self.projects
         }
+        self.service_monitor = ServiceMonitor()
+        self._pending_service_actions: set[str] = set()
         self._log_offsets: Dict[str, int] = {}
         self._selected_name: Optional[str] = None
         self._refreshing_tree = False
@@ -304,9 +318,11 @@ class MainWindow(tk.Tk):
 
     def _build_widgets(self) -> None:
         toolbar = ttk.Frame(self)
+        self.toolbar = toolbar
         toolbar.pack(side="top", fill="x", padx=8, pady=6)
 
         ttk.Button(toolbar, text="Add", style="Primary.TButton", command=self._add_project).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Add Service...", command=self._add_service).pack(side="left", padx=2)
         self.btn_edit = ttk.Button(toolbar, text="Edit", command=self._edit_project)
         self.btn_edit.pack(side="left", padx=2)
         self.btn_remove = ttk.Button(toolbar, text="Remove", command=self._remove_project)
@@ -326,6 +342,13 @@ class MainWindow(tk.Tk):
             toolbar, text="Open Website", style="Primary.TButton", command=self._open_selected_website
         )
         self.btn_open.pack(side="left", padx=2)
+        # Only packed while a service row is selected, see _update_action_buttons().
+        self.btn_open_data_dir = ttk.Button(
+            toolbar,
+            text="Open Data Directory",
+            style="Primary.TButton",
+            command=self._open_selected_data_directory,
+        )
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
         ttk.Button(toolbar, text="Port Scanner...", command=self._open_port_scanner).pack(side="left", padx=2)
 
@@ -414,18 +437,71 @@ class MainWindow(tk.Tk):
 
     def _build_context_menu(self) -> None:
         self.context_menu = tk.Menu(self, tearoff=False)
-        self.context_menu.add_command(label="Start Server", command=self._start_selected)
-        self.context_menu.add_command(label="Stop Server", command=self._stop_selected)
-        self.context_menu.add_command(label="Restart Server", command=self._restart_selected)
-        self.context_menu.add_separator()
-        self.context_menu.add_command(label="Open Website", command=self._open_selected_website)
-        self.context_menu.add_separator()
-        self.context_menu.add_command(
-            label="Save to servers.json", command=self._save_selected_unsaved_project
+
+    def _populate_context_menu(self, row_id: str) -> None:
+        """
+        Fill the context menu with the entries that apply to one row.
+
+        Server rows and service rows support different actions, so the menu is
+        rebuilt per click instead of greying out entries that can never apply.
+
+        :param row_id: Tree row the menu was opened on
+        """
+        menu = self.context_menu
+        menu.delete(0, "end")
+
+        if self._is_service_row(row_id):
+            self._populate_service_context_menu(row_id)
+            return
+
+        menu.add_command(label="Start Server", command=self._start_selected)
+        menu.add_command(label="Stop Server", command=self._stop_selected)
+        menu.add_command(label="Restart Server", command=self._restart_selected)
+        menu.add_separator()
+        menu.add_command(label="Open Website", command=self._open_selected_website)
+        menu.add_separator()
+        menu.add_command(label="Save to servers.json", command=self._save_selected_unsaved_project)
+        menu.entryconfig(
+            "Save to servers.json",
+            state="normal" if row_id in self._unsaved_names else "disabled",
         )
-        self.context_menu.add_separator()
-        self.context_menu.add_command(label="Edit...", command=self._edit_project)
-        self.context_menu.add_command(label="Remove...", command=self._remove_project)
+        menu.add_separator()
+        menu.add_command(label="Edit...", command=self._edit_project)
+        menu.add_command(label="Remove...", command=self._remove_project)
+
+    def _populate_service_context_menu(self, row_id: str) -> None:
+        """
+        Fill the context menu for a systemd service row.
+
+        :param row_id: Tree row the menu was opened on
+        """
+        menu = self.context_menu
+        service = self._get_service(row_id)
+        status = self.service_monitor.status(service.unit) if service is not None else None
+        busy = service is not None and service.unit in self._pending_service_actions
+        installed = status is not None and status.exists and not status.is_masked
+
+        menu.add_command(label="Start Service", command=self._start_selected)
+        menu.add_command(label="Stop Service", command=self._stop_selected)
+        menu.add_command(label="Restart Service", command=self._restart_selected)
+        menu.entryconfig(
+            "Start Service",
+            state="normal" if installed and not busy and not status.is_running else "disabled",
+        )
+        menu.entryconfig(
+            "Stop Service",
+            state="normal" if installed and not busy and status.is_running else "disabled",
+        )
+        menu.entryconfig("Restart Service", state="normal" if installed and not busy else "disabled")
+
+        menu.add_separator()
+        menu.add_command(label="Open Data Directory", command=self._open_selected_data_directory)
+        menu.entryconfig(
+            "Open Data Directory",
+            state="normal" if self._service_data_directory(service) else "disabled",
+        )
+        menu.add_separator()
+        menu.add_command(label="Remove...", command=self._remove_project)
 
     def _on_application_ready(self) -> None:
         notify_desktop_startup_complete()
@@ -476,6 +552,61 @@ class MainWindow(tk.Tk):
         selection = self.tree.selection()
         return selection[0] if selection else None
 
+    @staticmethod
+    def _is_service_row(row_id: Optional[str]) -> bool:
+        """
+        Check whether a tree row identifier belongs to a systemd service.
+
+        :param row_id: Tree row identifier, or None
+        :return: True for service rows
+        """
+        return bool(row_id) and row_id.startswith(SERVICE_ROW_PREFIX)
+
+    @staticmethod
+    def _service_row_id(service: SystemService) -> str:
+        """
+        Build the tree row identifier for a service.
+
+        The prefix keeps service rows in their own namespace, so a service can
+        never be mistaken for a project of the same name.
+
+        :param service: Service to identify
+        :return: Tree row identifier
+        """
+        return f"{SERVICE_ROW_PREFIX}{service.unit}"
+
+    def _get_service(self, row_id: Optional[str]) -> Optional[SystemService]:
+        """
+        Resolve a tree row identifier to its service entry.
+
+        :param row_id: Tree row identifier, or None
+        :return: Matching service, or None when the row is not a service
+        """
+        if not self._is_service_row(row_id):
+            return None
+        unit = row_id[len(SERVICE_ROW_PREFIX) :]
+        return next((service for service in self.services if service.unit == unit), None)
+
+    def _selected_service(self) -> Optional[SystemService]:
+        """
+        Return the currently selected service, if a service row is selected.
+
+        :return: Selected service, or None
+        """
+        return self._get_service(self._selected_project_name())
+
+    @staticmethod
+    def _service_data_directory(service: Optional[SystemService]) -> Optional[str]:
+        """
+        Return a service's data directory when it exists on disk.
+
+        :param service: Service to inspect, or None
+        :return: Existing directory path, or None when unavailable
+        """
+        if service is None or not service.data_directory:
+            return None
+        return service.data_directory if Path(service.data_directory).is_dir() else None
+
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
 
@@ -523,8 +654,28 @@ class MainWindow(tk.Tk):
         cpu_percent, memory_bytes = get_process_stats(pid)
         return format_cpu_percent(cpu_percent), format_memory_bytes(memory_bytes)
 
+    def _service_stats(self, service: SystemService) -> Tuple[str, str]:
+        """
+        Read CPU and memory usage of a service's main process.
+
+        :param service: Service to measure
+        :return: Formatted CPU and memory labels, or "-" when not running
+        """
+        status = self.service_monitor.status(service.unit)
+        if not status.is_running or status.main_pid is None:
+            return "-", "-"
+
+        cpu_percent, memory_bytes = get_process_stats(status.main_pid)
+        return format_cpu_percent(cpu_percent), format_memory_bytes(memory_bytes)
+
     def _update_action_buttons(self) -> None:
         selected_name = self._selected_project_name()
+
+        if self._is_service_row(selected_name):
+            self._update_action_buttons_for_service(selected_name or "")
+            return
+
+        self._show_data_directory_button(False)
         has_selection = selected_name is not None
         state = "normal" if has_selection else "disabled"
         for button in (
@@ -544,6 +695,53 @@ class MainWindow(tk.Tk):
             project = self._get_project(selected_name or "")
             can_open = project is not None and project.port is not None
             self.btn_open.configure(state="normal" if can_open else "disabled")
+
+    def _update_action_buttons_for_service(self, row_id: str) -> None:
+        """
+        Enable only the actions a systemd service supports.
+
+        Services are not editable (the catalog defines them) and have no website,
+        but they do offer their data directory.
+
+        :param row_id: Selected service row identifier
+        """
+        service = self._get_service(row_id)
+        status = self.service_monitor.status(service.unit) if service is not None else None
+        busy = service is not None and service.unit in self._pending_service_actions
+        controllable = status is not None and status.exists and not status.is_masked and not busy
+
+        self.btn_edit.configure(state="disabled")
+        self.btn_save_entry.configure(state="disabled")
+        self.btn_open.configure(state="disabled")
+        self.btn_remove.configure(state="disabled" if busy else "normal")
+        self.btn_start.configure(
+            state="normal" if controllable and not status.is_running else "disabled"
+        )
+        self.btn_stop.configure(state="normal" if controllable and status.is_running else "disabled")
+        self.btn_restart.configure(state="normal" if controllable else "disabled")
+
+        self._show_data_directory_button(True)
+        self.btn_open_data_dir.configure(
+            state="normal" if self._service_data_directory(service) else "disabled"
+        )
+
+    def _show_data_directory_button(self, visible: bool) -> None:
+        """
+        Show or hide the data directory button.
+
+        The button only exists for services, so it is packed on demand instead of
+        sitting greyed out next to the server actions.
+
+        :param visible: True to show the button next to "Open Website"
+        """
+        is_visible = bool(self.btn_open_data_dir.winfo_manager())
+        if visible == is_visible:
+            return
+
+        if visible:
+            self.btn_open_data_dir.pack(side="left", padx=2, after=self.btn_open)
+        else:
+            self.btn_open_data_dir.pack_forget()
 
     def _config_mtime(self) -> float:
         """
@@ -614,7 +812,14 @@ class MainWindow(tk.Tk):
             return False
 
         loaded = self.config_manager.load()
+        loaded_services = self.config_manager.load_services()
         self._config_mtime_seen = mtime
+
+        services_changed = [service.to_dict() for service in loaded_services] != [
+            service.to_dict() for service in self.services
+        ]
+        if services_changed:
+            self.services = loaded_services
 
         loaded_names = {project.name for project in loaded}
         surviving_unsaved = [
@@ -626,7 +831,7 @@ class MainWindow(tk.Tk):
         merged = loaded + surviving_unsaved
 
         if self._projects_signature(merged) == self._projects_signature(self.projects):
-            return False
+            return services_changed
 
         self.projects = merged
         self._sync_processes_with_projects()
@@ -645,6 +850,38 @@ class MainWindow(tk.Tk):
         if process.unmanaged:
             return "Running (unmanaged)"
         return "Running"
+
+    def _service_status_label(self, service: SystemService) -> str:
+        """
+        Build the status label for one service row.
+
+        :param service: Service whose systemd state is rendered
+        :return: Status text for the table
+        """
+        if service.unit in self._pending_service_actions:
+            return "Working..."
+        return self.service_monitor.status(service.unit).status_label()
+
+    def _service_row_values(self, service: SystemService) -> tuple:
+        """
+        Build the table cell values for one service row.
+
+        The data directory is shown in the Directory column. It is metadata, not
+        a working directory: nothing is ever launched from it.
+
+        :param service: Service to render
+        :return: Values tuple matching the tree's column order
+        """
+        return (
+            SERVICE_TYPE_LABEL,
+            service.port if service.port is not None else "-",
+            "-",
+            self._service_status_label(service),
+            "",
+            service.data_directory or "-",
+            "-",
+            "-",
+        )
 
     def _display_snapshot(self) -> tuple:
         """
@@ -670,6 +907,8 @@ class MainWindow(tk.Tk):
                     router,
                 )
             )
+        for service in self.services:
+            rows.append((service.name, *self._service_row_values(service)))
         return tuple(rows)
 
     def _refresh_tree(self) -> None:
@@ -704,6 +943,17 @@ class MainWindow(tk.Tk):
                     tags=("unsaved",) if is_unsaved else (),
                 )
 
+            for service in self.services:
+                cpu_label, memory_label = self._service_stats(service)
+                self.tree.insert(
+                    "",
+                    "end",
+                    iid=self._service_row_id(service),
+                    text=service.name,
+                    values=(*self._service_row_values(service), cpu_label, memory_label),
+                    tags=("service",),
+                )
+
             self._tree_sorter.reapply()
 
             if previous_selection and self.tree.exists(previous_selection):
@@ -716,6 +966,10 @@ class MainWindow(tk.Tk):
         if not self._columns_auto_sized:
             self._resize_tree_columns()
             self._fit_window_width_to_tree()
+            self.minsize(
+                max(WINDOW_MIN_WIDTH, self._required_toolbar_width()),
+                WINDOW_MIN_HEIGHT,
+            )
             self._columns_auto_sized = True
         self._sync_autostart_widgets()
         self._selected_name = self._selected_project_name()
@@ -835,11 +1089,28 @@ class MainWindow(tk.Tk):
             min_width = TREE_AUTOSTART_MIN_WIDTH if column_id == "autostart" else 40
             self.tree.column(column_id, width=width, minwidth=min_width, stretch=False, anchor="w")
 
+    def _required_toolbar_width(self) -> int:
+        """
+        Return the width the toolbar needs to show every button.
+
+        The hidden data directory button is counted as well, so selecting a
+        service does not make the window jump to a wider size.
+
+        :return: Required toolbar width in pixels including outer padding
+        """
+        self.update_idletasks()
+        width = self.toolbar.winfo_reqwidth()
+        if not self.btn_open_data_dir.winfo_manager():
+            width += self.btn_open_data_dir.winfo_reqwidth() + TOOLBAR_BUTTON_SPACING
+        return width + TOOLBAR_OUTER_PADDING
+
     def _fit_window_width_to_tree(self) -> None:
         """
         Resize the main window width to the table width within screen bounds.
 
-        The width is clamped so the window remains fully visible on screen.
+        The width never falls below what the toolbar needs, otherwise a short
+        server list would shrink the window until buttons are cut off. The width
+        is clamped so the window remains fully visible on screen.
         """
         self.update_idletasks()
 
@@ -847,7 +1118,7 @@ class MainWindow(tk.Tk):
         table_width = sum(int(self.tree.column(column_id, "width")) for column_id in column_ids)
         scrollbar_width = self._tree_vscrollbar.winfo_width() or 16
         target_width = table_width + scrollbar_width + WINDOW_TREE_EXTRA_WIDTH
-        target_width = max(target_width, WINDOW_MIN_WIDTH)
+        target_width = max(target_width, WINDOW_MIN_WIDTH, self._required_toolbar_width())
 
         screen_width = self.winfo_screenwidth()
         max_width = max(WINDOW_MIN_WIDTH, screen_width - WINDOW_SCREEN_MARGIN)
@@ -967,13 +1238,33 @@ class MainWindow(tk.Tk):
                 continue
 
             cpu_label, memory_label = self._process_stats(project.name)
-            values = list(self.tree.item(project.name, "values"))
-            if len(values) >= 10:
-                values[8] = cpu_label
-                values[9] = memory_label
-                self.tree.item(project.name, values=values)
+            self._write_stats_cells(project.name, cpu_label, memory_label)
+
+        for service in self.services:
+            row_id = self._service_row_id(service)
+            if not self.tree.exists(row_id):
+                continue
+
+            cpu_label, memory_label = self._service_stats(service)
+            self._write_stats_cells(row_id, cpu_label, memory_label)
 
         self.after_idle(self._position_autostart_widgets)
+
+    def _write_stats_cells(self, row_id: str, cpu_label: str, memory_label: str) -> None:
+        """
+        Update the CPU and memory cells of one existing table row.
+
+        :param row_id: Tree row identifier
+        :param cpu_label: Formatted CPU value
+        :param memory_label: Formatted memory value
+        """
+        values = list(self.tree.item(row_id, "values"))
+        if len(values) < 10:
+            return
+
+        values[8] = cpu_label
+        values[9] = memory_label
+        self.tree.item(row_id, values=values)
 
     def _schedule_stats_poll(self) -> None:
         if self._stats_job_id is not None:
@@ -1368,8 +1659,7 @@ class MainWindow(tk.Tk):
             self.tree.focus(row_id)
             self._selected_name = row_id
             self._update_action_buttons()
-            save_state = "normal" if row_id in self._unsaved_names else "disabled"
-            self.context_menu.entryconfig("Save to servers.json", state=save_state)
+            self._populate_context_menu(row_id)
             self.context_menu.tk_popup(event.x_root, event.y_root)
 
     def _on_tree_arrow_key(self, event) -> Optional[str]:
@@ -1410,25 +1700,33 @@ class MainWindow(tk.Tk):
         self._selected_name = self._selected_project_name()
         self._update_action_buttons()
 
-        if self._selected_name:
-            self.log_text.configure(state="normal")
-            self.log_text.delete("1.0", "end")
-            self.log_text.configure(state="disabled")
-            self._log_offsets.pop(self._selected_name, None)
-            self._log_follow_tail = True
-            self._refresh_log_tail(force_full=True)
-        else:
-            self.log_text.configure(state="normal")
-            self.log_text.delete("1.0", "end")
-            self.log_text.configure(state="disabled")
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+
+        if not self._selected_name:
+            return
+
+        if self._is_service_row(self._selected_name):
+            self._show_service_details()
+            return
+
+        self._log_offsets.pop(self._selected_name, None)
+        self._log_follow_tail = True
+        self._refresh_log_tail(force_full=True)
 
     def _on_tree_double_click(self, event) -> None:
         if self._refreshing_tree:
             return
         row_id = self.tree.identify_row(event.y)
-        if row_id:
-            self.tree.selection_set(row_id)
-            self._edit_project()
+        if not row_id:
+            return
+
+        self.tree.selection_set(row_id)
+        if self._is_service_row(row_id):
+            self._open_selected_data_directory()
+            return
+        self._edit_project()
 
     def _set_log_scroll_position(self, first: str, last: str) -> None:
         self._log_scrollbar.set(first, last)
@@ -1524,9 +1822,125 @@ class MainWindow(tk.Tk):
         self._start_project(dialog.result.name)
         self._refresh_tree()
 
+    def _add_service(self) -> None:
+        """Add curated systemd services that are installed on this machine."""
+        dialog = AddServiceDialog(self, existing_units=[service.unit for service in self.services])
+        self.wait_window(dialog)
+        if not dialog.result:
+            return
+
+        added = []
+        for service in dialog.result:
+            if any(existing.unit == service.unit for existing in self.services):
+                continue
+            self.services.append(service)
+            added.append(service.name)
+
+        if not added:
+            return
+
+        self._save()
+        self._refresh_tree()
+        self._set_status(f"Added service(s): {', '.join(added)}")
+
+    def _remove_service(self, row_id: str) -> None:
+        """
+        Remove a service from the list without touching systemd.
+
+        :param row_id: Service row identifier
+        """
+        service = self._get_service(row_id)
+        if service is None:
+            return
+
+        if not messagebox.askyesno(
+            "Remove Service",
+            f"Remove '{service.name}' from the list?\n\n"
+            f"The systemd unit '{service.unit}' keeps running and its boot "
+            "behavior stays unchanged.",
+            parent=self,
+        ):
+            return
+
+        self.services = [entry for entry in self.services if entry.unit != service.unit]
+        self.service_monitor.invalidate(service.unit)
+        self._save()
+        self._refresh_tree()
+        self._set_status(f"Removed '{service.name}' from the list.")
+
+    def _open_selected_data_directory(self) -> None:
+        """Open the selected service's data directory in the file manager."""
+        service = self._selected_service()
+        if service is None:
+            return
+
+        directory = self._service_data_directory(service)
+        if directory is None:
+            messagebox.showinfo(
+                "Open Data Directory",
+                f"The data directory of '{service.name}' could not be found"
+                + (f":\n{service.data_directory}" if service.data_directory else "."),
+                parent=self,
+            )
+            return
+
+        try:
+            subprocess.Popen(
+                ["xdg-open", directory],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            messagebox.showerror(
+                "Open Data Directory",
+                f"Could not open '{directory}':\n{exc}",
+                parent=self,
+            )
+            return
+
+        self._set_status(f"Opened {directory}")
+
+    def _show_service_details(self) -> None:
+        """Describe the selected service in the output pane instead of a log tail."""
+        service = self._selected_service()
+        if service is None:
+            return
+
+        status = self.service_monitor.status(service.unit)
+        boot_state = status.is_enabled_at_boot
+        if boot_state is None:
+            boot_text = f"not applicable ({status.enabled_state})"
+        else:
+            boot_text = "enabled" if boot_state else "disabled"
+
+        directory = service.data_directory or "not found"
+        if service.data_directory and self._service_data_directory(service) is None:
+            directory = f"{service.data_directory} (missing)"
+
+        lines = [
+            f"{service.name} is managed by systemd, not by DevServer Commander.",
+            "",
+            f"  Unit            {status.unit or service.unit}",
+            f"  Status          {status.status_label()}"
+            + (f" ({status.sub_state})" if status.sub_state else ""),
+            f"  Start at boot   {boot_text} (managed by systemd)",
+            f"  Port            {service.port if service.port is not None else 'unknown'}",
+            f"  Data directory  {directory}",
+            f"  Main PID        {status.main_pid if status.main_pid is not None else '-'}",
+            "",
+            "Start, stop and restart run through systemctl and ask for authorization.",
+            "This application never changes whether the unit starts at boot.",
+        ]
+
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.insert("end", "\n".join(lines) + "\n")
+        self.log_text.configure(state="disabled")
+
     def _edit_project(self) -> None:
         name = self._selected_project_name()
-        if not name:
+        if not name or self._is_service_row(name):
             return
         project = self._get_project(name)
         if project is None:
@@ -1574,6 +1988,9 @@ class MainWindow(tk.Tk):
         name = self._selected_project_name()
         if not name:
             return
+        if self._is_service_row(name):
+            self._remove_service(name)
+            return
         if self.processes[name].is_running():
             messagebox.showwarning("Server Running", "Stop the server before removing this project.")
             return
@@ -1604,6 +2021,10 @@ class MainWindow(tk.Tk):
         name = self._selected_project_name()
         if not name:
             messagebox.showinfo("Copy Log", "Please select a project first.")
+            return
+
+        if self._is_service_row(name):
+            self._copy_visible_output_to_clipboard()
             return
 
         project = self._get_project(name)
@@ -1638,6 +2059,19 @@ class MainWindow(tk.Tk):
             f"(latest {LOG_COPY_MAX_LINES} max)."
         )
 
+    def _copy_visible_output_to_clipboard(self) -> None:
+        """Copy the output pane as shown, used for rows that have no log file."""
+        content = self.log_text.get("1.0", "end-1c")
+        if not content.strip():
+            messagebox.showinfo("Copy Log", "There is no output to copy.")
+            return
+
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self.update_idletasks()
+        self._flash_copy_button()
+        self._set_status("Copied the visible output to the clipboard.")
+
     def _flash_copy_button(self) -> None:
         """Highlight the copy button briefly to confirm a successful clipboard copy."""
         self.btn_copy_log.configure(
@@ -1662,7 +2096,7 @@ class MainWindow(tk.Tk):
 
     def _open_selected_website(self) -> None:
         name = self._selected_project_name()
-        if not name:
+        if not name or self._is_service_row(name):
             return
         project = self._get_project(name)
         if project is None:
@@ -1680,6 +2114,9 @@ class MainWindow(tk.Tk):
         name = self._selected_project_name()
         if not name:
             return
+        if self._is_service_row(name):
+            self._run_service_action(name, "start")
+            return
         self._start_project(name)
         self._refresh_tree()
 
@@ -1687,12 +2124,18 @@ class MainWindow(tk.Tk):
         name = self._selected_project_name()
         if not name:
             return
+        if self._is_service_row(name):
+            self._run_service_action(name, "stop")
+            return
         self._stop_project(name)
         self._refresh_tree()
 
     def _restart_selected(self) -> None:
         name = self._selected_project_name()
         if not name:
+            return
+        if self._is_service_row(name):
+            self._run_service_action(name, "restart")
             return
         self._cancel_pending_restart(name)
         self._restart_attempts.pop(name, None)
@@ -1702,6 +2145,119 @@ class MainWindow(tk.Tk):
         except Exception as exc:  # noqa: BLE001 - surfaced to the user, not swallowed
             messagebox.showerror("Restart Failed", str(exc))
         self._refresh_tree()
+
+    def _running_server_names(self) -> List[str]:
+        """
+        List managed development servers that are currently running.
+
+        :return: Names of running servers
+        """
+        return [
+            project.name
+            for project in self.projects
+            if (process := self.processes.get(project.name)) is not None and process.is_running()
+        ]
+
+    def _confirm_service_interruption(self, service: SystemService, action: str) -> bool:
+        """
+        Warn before interrupting a service while development servers are running.
+
+        Which server uses which database is not knowable from the configuration,
+        so every running server is listed as potentially affected. This is the one
+        thing a plain ``systemctl`` call cannot tell the user.
+
+        :param service: Service about to be interrupted
+        :param action: ``stop`` or ``restart``
+        :return: True when the action may proceed
+        """
+        running = self._running_server_names()
+        if not running:
+            return True
+
+        listed = "\n".join(f"  - {name}" for name in running)
+        verb = "Stopping" if action == "stop" else "Restarting"
+        return messagebox.askyesno(
+            f"{verb} {service.name}",
+            f"{verb} '{service.name}' while these servers are running may break "
+            f"their database connections:\n\n{listed}\n\nContinue?",
+            parent=self,
+        )
+
+    def _run_service_action(self, row_id: str, action: str) -> None:
+        """
+        Start, stop, or restart a service without blocking the window.
+
+        The systemctl call runs on a worker thread because authorization can take
+        as long as the user needs to type a password.
+
+        :param row_id: Service row identifier
+        :param action: One of ``start``, ``stop``, ``restart``
+        """
+        service = self._get_service(row_id)
+        if service is None or service.unit in self._pending_service_actions:
+            return
+
+        if action in ("stop", "restart") and not self._confirm_service_interruption(service, action):
+            return
+
+        self._pending_service_actions.add(service.unit)
+        self._update_action_buttons()
+        self._refresh_tree_if_changed(force=True)
+        self._set_status(
+            f"Running 'systemctl {action} {service.unit}'. "
+            "Authorization may be requested."
+        )
+
+        holder: Dict[str, Tuple[bool, str]] = {}
+
+        def worker() -> None:
+            try:
+                holder["result"] = run_unit_action(action, service.unit)
+            except Exception as exc:  # noqa: BLE001 - reported on the UI thread
+                holder["result"] = (False, str(exc))
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        self._poll_service_action(service, action, thread, holder)
+
+    def _poll_service_action(
+        self,
+        service: SystemService,
+        action: str,
+        thread: threading.Thread,
+        holder: Dict[str, Tuple[bool, str]],
+    ) -> None:
+        """
+        Wait for a running systemctl call and report its outcome.
+
+        :param service: Service being acted on
+        :param action: Requested action
+        :param thread: Worker thread running the call
+        :param holder: Mapping the worker writes its result into
+        """
+        if thread.is_alive():
+            self.after(
+                SERVICE_ACTION_POLL_MS,
+                lambda: self._poll_service_action(service, action, thread, holder),
+            )
+            return
+
+        self._pending_service_actions.discard(service.unit)
+        self.service_monitor.invalidate(service.unit)
+        succeeded, message = holder.get("result", (False, "The service action produced no result."))
+
+        if succeeded:
+            self._set_status(f"{action.capitalize()}ed '{service.name}' ({service.unit}).")
+        else:
+            self._set_status(f"Could not {action} '{service.name}'.")
+            messagebox.showerror(
+                "Service Action Failed",
+                f"Could not {action} '{service.name}' ({service.unit}):\n\n{message}",
+                parent=self,
+            )
+
+        self._refresh_tree()
+        self._show_service_details()
 
     def _start_project(self, name: str, *, notify_on_failure: bool = False) -> bool:
         """
@@ -1748,7 +2304,7 @@ class MainWindow(tk.Tk):
     def _save(self) -> None:
         """Persist all projects except unsaved trial entries from the port scanner."""
         persisted = [project for project in self.projects if project.name not in self._unsaved_names]
-        self.config_manager.save(persisted)
+        self.config_manager.save(persisted, self.services)
         self._config_mtime_seen = self._config_mtime()
 
     def _open_preferences(self) -> None:
@@ -1798,6 +2354,11 @@ class MainWindow(tk.Tk):
         configured_ports = {
             project.port: project.name for project in self.projects if project.port is not None
         }
+        # Service ports are in the list too, so the scanner must not offer them
+        # again as unsaved ports.
+        for service in self.services:
+            if service.port is not None:
+                configured_ports.setdefault(service.port, service.name)
         dialog = PortScannerDialog(
             self,
             configured_ports=configured_ports,
@@ -1819,7 +2380,10 @@ class MainWindow(tk.Tk):
         command = suggest_command_for_port(scanned.pid, scanned.port) if scanned.pid is not None else ""
 
         suggested_name = make_unique_project_name(
-            self.projects, scanned.process_name or f"Port {scanned.port}"
+            self.projects,
+            scanned.process_name
+            or service_name_for_port(scanned.port)
+            or f"Port {scanned.port}",
         )
         guessed = ServerProject(
             name=suggested_name,

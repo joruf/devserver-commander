@@ -1,13 +1,18 @@
 """Discover TCP ports currently listening on the local machine."""
 
 import os
+import pwd
 import re
 import shlex
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 _PROCESS_PATTERN = re.compile(r'\(\("([^"]+)",pid=(\d+)')
+
+PROC_NET_TCP_FILES = ("/proc/net/tcp", "/proc/net/tcp6")
+TCP_STATE_LISTEN = "0A"
 
 
 @dataclass(frozen=True)
@@ -112,6 +117,64 @@ def scan_listening_ports() -> List[ScannedPort]:
         ports[parsed.port] = parsed
 
     return sorted(ports.values(), key=lambda item: item.port)
+
+
+def parse_proc_net_listen_uids(text: str) -> Dict[int, int]:
+    """
+    Extract the owning user id of every listening socket in ``/proc/net/tcp``.
+
+    :param text: Contents of ``/proc/net/tcp`` or ``/proc/net/tcp6``
+    :return: Mapping of TCP port to owning user id
+    """
+    owners: Dict[int, int] = {}
+
+    for line in text.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 8 or fields[3] != TCP_STATE_LISTEN:
+            continue
+
+        _address, separator, hex_port = fields[1].rpartition(":")
+        if not separator:
+            continue
+
+        try:
+            port = int(hex_port, 16)
+            uid = int(fields[7])
+        except ValueError:
+            continue
+
+        owners.setdefault(port, uid)
+
+    return owners
+
+
+def socket_owner_for_port(port: int) -> Optional[str]:
+    """
+    Return the user account owning a listening socket.
+
+    ``ss -p`` only reveals process details for sockets of the calling user, so a
+    database listening as its own system user shows up without a process name.
+    Reading the owner from ``/proc/net/tcp`` explains why, without needing root.
+
+    :param port: TCP port number
+    :return: User name, the numeric uid as text when it has no name, or None
+    """
+    for path in PROC_NET_TCP_FILES:
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        uid = parse_proc_net_listen_uids(text).get(port)
+        if uid is None:
+            continue
+
+        try:
+            return pwd.getpwuid(uid).pw_name
+        except KeyError:
+            return str(uid)
+
+    return None
 
 
 def read_process_cwd(pid: int) -> Optional[str]:

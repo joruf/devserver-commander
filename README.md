@@ -22,11 +22,14 @@ A desktop GUI to **start, stop and restart local development servers** — PHP b
 - **Crash notifications** — desktop notification when a server stops without being asked to, so failures are visible while the window is hidden
 - **Automatic restart** — optionally restart crashed servers with a 2s / 5s / 15s backoff before giving up (**Settings → Preferences**)
 - **CPU and memory columns** — see per-server resource usage in the server list (refresh interval configurable in **Settings → Preferences**)
+- **Database services** — list MariaDB, MySQL, PostgreSQL, and Redis next to your servers, start and stop them via `systemctl`, and jump to their data directory
+- **Dependency warning** — stopping a database service warns which development servers are still running, something a plain `systemctl` call cannot tell you
 - **Context menu** — right-click a server for start, stop, restart, open website, edit, and remove
 - **Edit running servers** — change configuration while a server is running; saving prompts to restart when needed
 - **Port conflict details** — clear error messages with PID and process name when a port is already in use
 - **Single instance** — only one application window; launching again brings the existing window to the front
 - **Detects externally running servers** — shows "Running (unmanaged)" when a configured port is already in use
+- **Port scanner with service names** — every listening port is named from a curated table plus `/etc/services`, so ports whose process belongs to another user (databases, DNS, CUPS) are identified instead of showing a bare dash
 - **Desktop shortcut** — optional first-run prompt to create a launcher on your desktop
 - **No pip dependencies** — Python standard library and tkinter only
 
@@ -152,14 +155,15 @@ devserver-commander/
 │
 ├── config/                         # Configuration loading, validation, and app preferences
 │   ├── __init__.py                 # Public exports for the config package
-│   ├── manager.py                  # Loads and saves the server list from servers.json
+│   ├── manager.py                  # Loads and saves the server and service lists from servers.json
 │   ├── validation.py               # Validates ports, document roots, router scripts, and launch commands
 │   ├── app_settings.py             # Loads and saves user preferences (e.g. stats refresh interval)
 │   └── presets.py                  # Built-in server templates for the add-project dialog
 │
 ├── models/                         # Data structures used across the application
 │   ├── __init__.py                 # Public exports for the models package
-│   └── server_project.py           # ServerProject dataclass: name, directory, command, port, env, autostart
+│   ├── server_project.py           # ServerProject dataclass: name, directory, command, port, env, autostart
+│   └── system_service.py           # SystemService dataclass: name, systemd unit, port, data directory
 │
 ├── services/                       # Business logic without UI dependencies
 │   ├── __init__.py                 # Public exports for the services package
@@ -167,7 +171,10 @@ devserver-commander/
 │   ├── php.py                      # PHP version detection, command building, and install helpers
 │   ├── node.py                     # Node.js command building and npm/npx/node detection helpers
 │   ├── server_types.py             # Detects whether a stored command is PHP, Node.js, or custom
+│   ├── systemd.py                  # Reads unit state and runs start/stop/restart with polkit authorization
+│   ├── service_catalog.py          # Closed catalog of supported database services and data directory detection
 │   ├── dev_tools.py                # One-click download/install helpers for MailHog and Mailpit
+│   ├── well_known_ports.py         # Names the service behind a port via curated table and /etc/services
 │   ├── stats.py                    # CPU and memory usage via /proc; port-to-PID lookup
 │   ├── notifications.py            # Desktop notifications via notify-send for events behind a hidden window
 │   ├── port_info.py                # Describes which process is using a TCP port
@@ -180,6 +187,7 @@ devserver-commander/
 │   ├── __init__.py                 # Public exports for the UI package
 │   ├── main_window.py              # Main window: server list, toolbar, log view, menus, polling
 │   ├── project_dialog.py           # Add/Edit dialog for PHP, Node.js, and custom server commands
+│   ├── service_dialog.py           # Add dialog listing detected database services from the catalog
 │   ├── directory_picker.py         # Custom directory chooser with hidden-folder support
 │   ├── preferences_dialog.py     # Preferences dialog for application-wide settings
 │   ├── desktop_setup.py            # First-run prompt, desktop shortcut creation, and login autostart entry
@@ -236,6 +244,14 @@ All servers are stored in `servers.json` in the project directory:
       },
       "autostart": false
     }
+  ],
+  "services": [
+    {
+      "name": "MariaDB",
+      "unit": "mariadb.service",
+      "port": 3306,
+      "data_directory": "/var/lib/mysql"
+    }
   ]
 }
 ```
@@ -244,6 +260,7 @@ All servers are stored in `servers.json` in the project directory:
 - `-t public/` sets the document root (web root folder)
 - `public/index.php` is an optional router script that handles all requests
 - `PHP_CLI_SERVER_WORKERS` is omitted when set to `0` in the GUI
+- `services` entries are only loaded when their unit is part of the catalog, so a hand-edited file cannot add arbitrary systemd units
 
 Log files are written to `~/.local/state/devserver-commander/logs/` and persist even when the GUI is closed.
 
@@ -276,14 +293,71 @@ When adding a project, choose a template to pre-fill the dialog:
 
 MailHog and Mailpit are installed to `~/.local/share/devserver-commander/bin/` when you click **Install...** in the project dialog.
 
+## Database services
+
+Your projects usually share one database server. Unlike a development server, it is
+not a per-project child process: it is system-wide infrastructure owned by systemd,
+running as its own user. It therefore gets its own entry type instead of being
+squeezed into a server entry.
+
+Click **Add Service...** to list the supported services that are installed on this
+machine:
+
+| Service | Units detected | Port | Default data directory |
+|---------|----------------|------|------------------------|
+| MariaDB | `mariadb.service` | 3306 | `/var/lib/mysql` |
+| MySQL | `mysql.service`, `mysqld.service` | 3306 | `/var/lib/mysql` |
+| PostgreSQL | `postgresql.service` | 5432 | `/var/lib/postgresql` |
+| Redis | `redis-server.service`, `redis.service` | 6379 | `/var/lib/redis` |
+
+Units that alias one another collapse into a single entry, and the data directory is
+read from the service's own configuration (`datadir`, `data_directory`, `dir`) with
+the packaging default as fallback. The resolved path is shown in the **Directory**
+column, and **Open Data Directory** — visible only while a service row is selected —
+opens it in your file manager.
+
+Start, stop and restart run through `systemctl`. Authorization is requested through
+your desktop's polkit agent, falling back to `pkexec`; nothing is elevated
+permanently and no `sudo` rule is needed. Stopping a service while development
+servers are running asks for confirmation first and lists them by name.
+
+**Deliberate limits.** This is a development-server manager, not a systemd front end:
+
+- The service list is a closed catalog — there is no field for arbitrary unit names, and entries outside the catalog are dropped when reading `servers.json`
+- Boot behavior stays with systemd: the app never runs `enable` or `disable`, so there is no second source of truth. Service rows have no autostart checkbox, and the app does not start services when it launches
+- No log viewer, config editor, or backup features — use `journalctl` and your database tools for those
+
+## Port scanner
+
+**View → Port Scanner...** lists every listening TCP port that is not already in the
+server list, including the ports of configured services.
+
+`ss -p` only reveals process details for sockets belonging to the calling user. A
+database listening as its own system user therefore shows no process name — the
+column stays a dash, which used to leave the row unidentified. The **Service** column
+fills that gap: it names the service conventionally reachable on that port, first from
+a curated table (readable names plus development tooling such as Vite, Mailpit, and
+Ollama), then from `/etc/services` for the several hundred registered names shipped
+with the system.
+
+Selecting a row explains the rest in the status line: the process and PID when they are
+readable, otherwise the user account owning the socket, read from `/proc/net/tcp`. A
+name derived from the port number is a convention, not proof of what is running, so the
+**Process** column keeps reporting only what `ss` actually observed.
+
+The same naming appears in port conflict messages, so configuring a port that a
+database already occupies says which service it is.
+
 ## Usage tips
 
 | Action | How |
 |--------|-----|
 | Add server | **Add** button, then choose a **Template** preset |
+| Add database service | **Add Service...** button, then pick a detected service |
 | Edit server | Select entry, then **Edit**, double-click, or right-click **Edit...** |
 | Start / stop / restart | Toolbar buttons or right-click context menu |
 | Open website | **Open Website** button or right-click context menu |
+| Open a service's data directory | Select the service, then **Open Data Directory** or double-click the row |
 | Save visible log | **View → Save Visible Log Output...** |
 | Hide to tray | Close the window or **File → Close** |
 | Quit completely | **File → Close and Exit** or tray menu **Exit** |
@@ -296,6 +370,8 @@ MailHog and Mailpit are installed to `~/.local/share/devserver-commander/bin/` w
 | Browse with hidden folders | **Browse...** in the project dialog, then enable the checkbox |
 
 Edit and Remove are disabled until a server is selected. Running servers can be edited; saving while a server is running asks whether to restart it. Remove still requires the server to be stopped first.
+
+Service rows behave differently: they cannot be edited (the catalog defines them) and have no website. Removing a service only takes it off the list — the systemd unit keeps running and its boot behavior stays unchanged.
 
 ## Regenerating screenshots
 
@@ -316,6 +392,10 @@ python3 -m unittest discover -s tests -v
 CI runs the unit suite on Ubuntu 22.04/24.04 (Python 3.11 and 3.12) on every push and
 pull request. **Windows is not supported** for this Linux desktop tool, so CI has no
 `windows-latest` job.
+
+The service tests never call `systemctl`: unit states are faked, so the suite reports the
+same result whether or not a database is installed. The main-window tests need a display
+and skip themselves automatically when Tk cannot open one.
 
 ### Multi-OS matrix (local Linux host)
 
