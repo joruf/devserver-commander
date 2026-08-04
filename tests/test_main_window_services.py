@@ -301,6 +301,106 @@ class ServiceRowTests(unittest.TestCase):
             [PROJECT_NAME],
         )
 
+    def test_scanned_database_port_is_offered_as_a_service(self) -> None:
+        """Taking over 3306 must not create a server entry that cannot be launched."""
+        from services.port_scan import ScannedPort
+        from services.service_catalog import DetectedService, ServiceCandidate
+
+        candidate = ServiceCandidate(
+            unit="mariadb.service",
+            display_name="MariaDB",
+            port=3306,
+            default_data_directory="/var/lib/mysql",
+        )
+        detected = DetectedService(
+            candidate=candidate,
+            status=self._status_for("mariadb.service"),
+            data_directory=str(self.data_directory),
+        )
+
+        self.window.services = []
+        self.window._refresh_tree()
+
+        asked = {}
+        original_ask = self._module.messagebox.askyesno
+        original_detect = self._module.detect_service_for_port
+        self._module.detect_service_for_port = lambda port: detected if port == 3306 else None
+
+        def fake_ask(title, message, **kwargs):
+            asked["message"] = message
+            return True
+
+        self._module.messagebox.askyesno = fake_ask
+        try:
+            handled = self.window._offer_service_for_scanned_port(
+                ScannedPort(port=3306, address="127.0.0.1", pid=None, process_name=None)
+            )
+        finally:
+            self._module.messagebox.askyesno = original_ask
+            self._module.detect_service_for_port = original_detect
+
+        self.assertTrue(handled)
+        self.assertEqual([service.unit for service in self.window.services], ["mariadb.service"])
+        self.assertIn("mariadb.service", asked["message"])
+        self.assertIn(str(self.data_directory), asked["message"])
+
+    def test_scanned_service_added_this_way_needs_no_directory_or_command(self) -> None:
+        """The stored service entry carries only metadata, never a launch setup."""
+        service = self.window.services[0]
+        self.assertEqual(
+            set(service.to_dict()),
+            {"name", "unit", "port", "data_directory"},
+        )
+        self.assertFalse(hasattr(service, "command"))
+        self.assertFalse(hasattr(service, "directory"))
+
+    def test_already_added_service_falls_through_to_the_server_dialog(self) -> None:
+        from services.port_scan import ScannedPort
+        from services.service_catalog import DetectedService, ServiceCandidate
+
+        candidate = ServiceCandidate(
+            unit=SERVICE_UNIT,
+            display_name="MariaDB",
+            port=3306,
+            default_data_directory="/var/lib/mysql",
+        )
+        detected = DetectedService(
+            candidate=candidate,
+            status=self._status_for(SERVICE_UNIT),
+            data_directory="/var/lib/mysql",
+        )
+        original_detect = self._module.detect_service_for_port
+        self._module.detect_service_for_port = lambda port: detected if port == 3306 else None
+        try:
+            handled = self.window._offer_service_for_scanned_port(
+                ScannedPort(port=3306, address="127.0.0.1", pid=None, process_name=None)
+            )
+        finally:
+            self._module.detect_service_for_port = original_detect
+
+        self.assertFalse(handled)
+
+    def test_non_service_port_is_not_intercepted(self) -> None:
+        from services.port_scan import ScannedPort
+
+        handled = self.window._offer_service_for_scanned_port(
+            ScannedPort(port=8199, address="127.0.0.1", pid=999, process_name="php8.2")
+        )
+        self.assertFalse(handled)
+
+    def test_service_ports_are_hidden_from_the_port_scanner(self) -> None:
+        """A service in the list must not be offered again as an unsaved port."""
+        configured = {
+            project.port: project.name
+            for project in self.window.projects
+            if project.port is not None
+        }
+        for service in self.window.services:
+            if service.port is not None:
+                configured.setdefault(service.port, service.name)
+        self.assertIn(3306, configured)
+        self.assertEqual(configured[3306], "MariaDB")
+
     def test_toolbar_fits_into_the_window(self) -> None:
         """Every toolbar button must stay reachable at the computed window width."""
         self.window.update_idletasks()

@@ -9,6 +9,7 @@ from services.service_catalog import (
     SERVICE_CANDIDATES,
     ServiceCandidate,
     detect_available_services,
+    detect_service_for_port,
     is_catalog_unit,
     parse_config_value,
     resolve_data_directory,
@@ -222,6 +223,26 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(service.unit, "mariadb.service")
         self.assertEqual(service.port, 3306)
         self.assertEqual(service.data_directory, "/var/lib/test")
+
+    def test_finds_the_service_behind_a_scanned_port(self) -> None:
+        self._install({"mariadb.service": "mariadb.service"})
+        detected = detect_service_for_port(3306)
+        self.assertIsNotNone(detected)
+        self.assertEqual(detected.unit, "mariadb.service")
+
+    def test_reports_no_service_for_a_development_server_port(self) -> None:
+        self._install({"mariadb.service": "mariadb.service"})
+        self.assertIsNone(detect_service_for_port(8001))
+
+    def test_reports_no_service_when_the_unit_is_not_installed(self) -> None:
+        self._install({})
+        self.assertIsNone(detect_service_for_port(3306))
+
+    def test_finds_postgresql_by_its_own_port(self) -> None:
+        self._install({"postgresql.service": "postgresql.service"})
+        detected = detect_service_for_port(5432)
+        self.assertIsNotNone(detected)
+        self.assertEqual(detected.candidate.display_name, "PostgreSQL")
 
 
 if __name__ == "__main__":

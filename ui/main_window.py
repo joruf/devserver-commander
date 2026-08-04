@@ -25,6 +25,7 @@ from services.notifications import send_desktop_notification
 from services.port_scan import ScannedPort, read_process_cwd, suggest_command_for_port
 from services.process import ServerProcess, describe_exit, log_path_for
 from services.server_types import server_type_label_for_command
+from services.service_catalog import detect_service_for_port
 from services.systemd import ServiceMonitor, run_unit_action
 from services.well_known_ports import service_name_for_port
 from services.cli_args import parse_args
@@ -2376,6 +2377,9 @@ class MainWindow(tk.Tk):
 
         :param scanned: Port entry taken over from the port scanner dialog
         """
+        if self._offer_service_for_scanned_port(scanned):
+            return
+
         directory = read_process_cwd(scanned.pid) if scanned.pid is not None else None
         command = suggest_command_for_port(scanned.pid, scanned.port) if scanned.pid is not None else ""
 
@@ -2408,6 +2412,52 @@ class MainWindow(tk.Tk):
             f"Added '{dialog.result.name}' to the list for testing. "
             "Use 'Save to servers.json' to keep it permanently."
         )
+
+    def _offer_service_for_scanned_port(self, scanned: ScannedPort) -> bool:
+        """
+        Offer the service flow when a scanned port belongs to a catalog service.
+
+        A database port taken over as a development server would produce an entry
+        this application could never start: the service runs under systemd as its
+        own user. The service entry needs no launch directory and no command, and
+        its unit, port, and data directory are filled in automatically.
+
+        :param scanned: Port entry taken over from the port scanner dialog
+        :return: True when the port was handled as a service
+        """
+        detected = detect_service_for_port(scanned.port)
+        if detected is None:
+            return False
+
+        if any(service.unit == detected.unit for service in self.services):
+            return False
+
+        name = detected.candidate.display_name
+        directory = detected.data_directory or "could not be determined"
+        if not messagebox.askyesno(
+            "Add as Service?",
+            f"Port {scanned.port} belongs to {name} ({detected.unit}), "
+            "a service managed by systemd.\n\n"
+            "A server entry could not start or stop it, and a service needs "
+            "neither a launch directory nor a command.\n\n"
+            f"Detected data directory: {directory}\n\n"
+            f"Add {name} as a service instead?",
+            parent=self,
+        ):
+            return False
+
+        service = detected.to_service()
+        self.services.append(service)
+        self.service_monitor.invalidate(service.unit)
+        self._save()
+        self._refresh_tree()
+
+        row_id = self._service_row_id(service)
+        if self.tree.exists(row_id):
+            self.tree.selection_set(row_id)
+            self.tree.see(row_id)
+        self._set_status(f"Added service '{service.name}' ({service.unit}).")
+        return True
 
     def _save_selected_unsaved_project(self) -> None:
         """Persist the selected unsaved trial project to servers.json."""

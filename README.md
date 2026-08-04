@@ -30,6 +30,7 @@ A desktop GUI to **start, stop and restart local development servers** — PHP b
 - **Single instance** — only one application window; launching again brings the existing window to the front
 - **Detects externally running servers** — shows "Running (unmanaged)" when a configured port is already in use
 - **Port scanner with service names** — every listening port is named from a curated table plus `/etc/services`, so ports whose process belongs to another user (databases, DNS, CUPS) are identified instead of showing a bare dash
+- **Database ports route to the service flow** — taking over a database port from the port scanner adds it as a systemd service with an auto-detected data directory, instead of a server entry that could never launch it
 - **Desktop shortcut** — optional first-run prompt to create a launcher on your desktop
 - **No pip dependencies** — Python standard library and tkinter only
 
@@ -347,6 +348,24 @@ name derived from the port number is a convention, not proof of what is running,
 
 The same naming appears in port conflict messages, so configuring a port that a
 database already occupies says which service it is.
+
+### Taking over a database port
+
+**Add to Server List...** on a database port offers the service flow instead. A server
+entry would be a dead end there: the process runs under systemd as its own user, so
+this application could neither launch nor stop it.
+
+Two things follow from that, and both remove work rather than adding a field to fill in:
+
+- A service needs **no launch directory and no command at all**. `SystemService` stores
+  only name, unit, port, and data directory
+- The data directory is **detected automatically** from the service's own configuration,
+  so nothing has to be typed
+
+The process working directory, by the way, cannot be read for a service:
+`/proc/<pid>/cwd` is only readable by the process owner or root, and the units do not
+set `WorkingDirectory=`. That is why the data directory is resolved from the
+configuration instead. Declining the offer still opens the normal server dialog.
 
 ## Usage tips
 

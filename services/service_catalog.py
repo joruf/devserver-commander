@@ -247,6 +247,22 @@ def detect_available_services() -> List[DetectedService]:
     return sorted(by_resolved_unit.values(), key=lambda item: (item.candidate.display_name, item.unit))
 
 
+def detect_service_for_port(port: int) -> Optional[DetectedService]:
+    """
+    Find an installed catalog service that listens on the given port.
+
+    Used by the port scanner: a database port must not be taken over as a
+    development server, because such an entry could never launch the service.
+
+    :param port: TCP port found listening
+    :return: Matching installed service, or None
+    """
+    for detected in detect_available_services():
+        if detected.candidate.port == port:
+            return detected
+    return None
+
+
 def is_catalog_unit(unit: str) -> bool:
     """
     Check whether a unit name belongs to the curated catalog.
