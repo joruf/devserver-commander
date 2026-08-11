@@ -287,6 +287,57 @@ class ServiceRowTests(unittest.TestCase):
         self.assertIn("Open Website", labels)
         self.assertIn("Edit...", labels)
 
+    def _double_click(self, row_id: str) -> None:
+        """
+        Double-click a row without needing real pixel coordinates.
+
+        :param row_id: Row the click should land on
+        """
+        self.window.tree.identify_row = lambda _y: row_id
+        self.window._on_tree_double_click(_FakeEvent(y=1))
+
+    def _record_server_actions(self) -> List[str]:
+        """
+        Replace the server start and stop calls with recording stubs.
+
+        Real calls would spawn a PHP process, which a unit test must not do.
+
+        :return: List that receives ``start`` or ``stop`` as they are requested
+        """
+        calls: List[str] = []
+        self.window._start_project = lambda name, **_kwargs: calls.append("start") or True
+        self.window._stop_project = lambda name: calls.append("stop")
+        self.window._edit_project = lambda: calls.append("edit")
+        return calls
+
+    def test_double_click_starts_a_stopped_server(self) -> None:
+        calls = self._record_server_actions()
+        self._double_click(PROJECT_NAME)
+        self.assertEqual(calls, ["start"])
+
+    def test_double_click_stops_a_running_server(self) -> None:
+        calls = self._record_server_actions()
+        self.window.processes[PROJECT_NAME].is_running = lambda: True
+        self._double_click(PROJECT_NAME)
+        self.assertEqual(calls, ["stop"])
+
+    def test_double_click_never_opens_the_edit_dialog(self) -> None:
+        """Editing is reached through the Edit button, so a stray click cannot open it."""
+        calls = self._record_server_actions()
+        self._double_click(PROJECT_NAME)
+        self.assertNotIn("edit", calls)
+
+    def test_double_click_selects_the_clicked_server(self) -> None:
+        self._record_server_actions()
+        self._double_click(PROJECT_NAME)
+        self.assertEqual(self.window.tree.selection(), (PROJECT_NAME,))
+
+    def test_double_click_on_a_service_still_opens_the_data_directory(self) -> None:
+        opened: List[str] = []
+        self.window._open_selected_data_directory = lambda: opened.append("data-dir")
+        self._double_click(self.service_row)
+        self.assertEqual(opened, ["data-dir"])
+
     def test_services_are_not_autostarted_by_the_application(self) -> None:
         """systemd owns the boot behavior, so autostart must ignore services."""
         self.window._autostart_projects()
@@ -456,6 +507,13 @@ class ServiceRowTests(unittest.TestCase):
         self.assertIn("systemd", text)
         self.assertIn("no start command", text)
         self.assertIn("boot", text)
+
+
+class _FakeEvent:
+    """Carries the one attribute the tree click handlers read."""
+
+    def __init__(self, y: int) -> None:
+        self.y = y
 
 
 class _FakeMonitor:

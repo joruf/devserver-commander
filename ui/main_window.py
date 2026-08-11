@@ -479,8 +479,10 @@ class MainWindow(tk.Tk):
             (
                 "edit",
                 self.btn_edit,
-                "Change the selected server's configuration. Services cannot be "
-                "edited: their unit, port, and data directory come from the system.",
+                "Change the selected server's configuration: select the row in the "
+                "list, then press this button. A double-click on the row starts or "
+                "stops the server instead. Services cannot be edited: their unit, "
+                "port, and data directory come from the system.",
             ),
             (
                 "remove",
@@ -498,13 +500,16 @@ class MainWindow(tk.Tk):
                 "start",
                 self.btn_start,
                 "Start the selected entry: a server as a child process of this "
-                "application, a service through systemctl.",
+                "application, a service through systemctl.\n\n"
+                "Double-clicking a server row does the same, and stops it again "
+                "when it is already running.",
             ),
             (
                 "stop",
                 self.btn_stop,
-                "Stop the selected entry. Stopping a service warns first when "
-                "servers are still running that may depend on it.",
+                "Stop the selected entry, as does a double-click on a running server "
+                "row. Stopping a service warns first when servers are still running "
+                "that may depend on it.",
             ),
             (
                 "restart",
@@ -1827,6 +1832,15 @@ class MainWindow(tk.Tk):
         self._refresh_log_tail(force_full=True)
 
     def _on_tree_double_click(self, event) -> None:
+        """
+        Toggle the double-clicked server between running and stopped.
+
+        Editing is deliberately not bound here: it is reached by selecting a row
+        and pressing **Edit**, so a stray double-click cannot open a dialog on top
+        of a running server. Service rows keep opening their data directory.
+
+        :param event: Tkinter double-click event, used for the clicked row
+        """
         if self._refreshing_tree:
             return
         row_id = self.tree.identify_row(event.y)
@@ -1837,7 +1851,7 @@ class MainWindow(tk.Tk):
         if self._is_service_row(row_id):
             self._open_selected_data_directory()
             return
-        self._edit_project()
+        self._toggle_selected_project()
 
     def _set_log_scroll_position(self, first: str, last: str) -> None:
         self._log_scrollbar.set(first, last)
@@ -2239,6 +2253,28 @@ class MainWindow(tk.Tk):
             self._run_service_action(name, "stop")
             return
         self._stop_project(name)
+        self._refresh_tree()
+
+    def _toggle_selected_project(self) -> None:
+        """
+        Start the selected server when it is stopped, stop it when it is running.
+
+        This is what a double-click on a server row does. Restart is not part of it:
+        a double-click on a running server should leave it stopped, not silently
+        bring it back up.
+        """
+        name = self._selected_project_name()
+        if not name or self._is_service_row(name):
+            return
+
+        process = self.processes.get(name)
+        if process is None:
+            return
+
+        if process.is_running():
+            self._stop_project(name)
+        else:
+            self._start_project(name)
         self._refresh_tree()
 
     def _restart_selected(self) -> None:

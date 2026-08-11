@@ -385,7 +385,8 @@ configuration instead. Declining the offer still opens the normal server dialog.
 | Add server | **Add Server...** button, then choose a **Template** preset |
 | Add database service | **Add Service...** button, then pick a detected service |
 | See what a button does | Hover it — every toolbar button has a tooltip, including greyed-out ones |
-| Edit server | Select entry, then **Edit**, double-click, or right-click **Edit...** |
+| Edit server | Select entry, then **Edit** or right-click **Edit...** |
+| Start / stop a server quickly | Double-click the row: running servers stop, stopped servers start |
 | Start / stop / restart | Toolbar buttons or right-click context menu |
 | Open website | **Open Website** button or right-click context menu |
 | Open a service's data directory | Select the service, then **Open Data Directory** or double-click the row |
