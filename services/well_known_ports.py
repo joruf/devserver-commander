@@ -60,8 +60,8 @@ WELL_KNOWN_PORTS: Dict[int, str] = {
     995: "POP3S",
     143: "IMAP",
     993: "IMAPS",
-    1025: "MailHog / Mailpit (SMTP)",
-    8025: "MailHog / Mailpit (web UI)",
+    1025: "Mailpit (SMTP)",
+    8025: "Mailpit (web UI)",
     1080: "MailCatcher (web UI)",
     # Web servers and proxies
     80: "HTTP",

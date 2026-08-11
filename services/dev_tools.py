@@ -14,8 +14,7 @@ from typing import Dict, Optional, Tuple
 
 from paths import TOOLS_DIR
 
-MAILHOG_VERSION = "v1.0.1"
-MAILPIT_VERSION = "v1.30.2"
+MAILPIT_VERSION = "v1.30.7"
 
 
 @dataclass(frozen=True)
@@ -29,12 +28,6 @@ class DevTool:
 
 
 DEV_TOOLS: Dict[str, DevTool] = {
-    "mailhog": DevTool(
-        tool_id="mailhog",
-        display_name="MailHog",
-        binary_name="mailhog",
-        default_port=8025,
-    ),
     "mailpit": DevTool(
         tool_id="mailpit",
         display_name="Mailpit",
@@ -44,7 +37,6 @@ DEV_TOOLS: Dict[str, DevTool] = {
 }
 
 PRESET_DEV_TOOLS = {
-    "MailHog": "mailhog",
     "Mailpit": "mailpit",
 }
 
@@ -158,17 +150,6 @@ def identify_dev_tool_from_command(command: str) -> Optional[str]:
     return None
 
 
-def _mailhog_download_url(arch: str) -> Optional[str]:
-    if arch == "amd64":
-        asset = "MailHog_linux_amd64"
-    elif arch == "arm":
-        asset = "MailHog_linux_armv6"
-    else:
-        return None
-
-    return f"https://github.com/mailhog/MailHog/releases/download/{MAILHOG_VERSION}/{asset}"
-
-
 def _mailpit_download_url(arch: str) -> Optional[str]:
     asset_map = {
         "amd64": "mailpit-linux-amd64.tar.gz",
@@ -196,29 +177,6 @@ def _write_executable(path: Path, data: bytes) -> None:
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     path.chmod(0o755)
-
-
-def _install_mailhog(arch: str) -> Tuple[bool, str]:
-    url = _mailhog_download_url(arch)
-    if url is None:
-        return (
-            False,
-            "MailHog does not provide a binary for this CPU architecture.\n"
-            "Use Mailpit instead.",
-        )
-
-    destination = dev_tool_binary_path("mailhog")
-    try:
-        data = _download_bytes(url)
-    except (OSError, urllib.error.URLError) as exc:
-        return False, f"Could not download MailHog:\n{exc}"
-
-    try:
-        _write_executable(destination, data)
-    except OSError as exc:
-        return False, f"Could not install MailHog:\n{exc}"
-
-    return True, f"MailHog installed to:\n{destination}"
 
 
 def _install_mailpit(arch: str) -> Tuple[bool, str]:
@@ -263,8 +221,6 @@ def install_dev_tool(tool_id: str) -> Tuple[bool, str]:
         return True, f"{DEV_TOOLS[tool_id].display_name} is already installed:\n{path}"
 
     arch = _linux_arch()
-    if tool_id == "mailhog":
-        return _install_mailhog(arch)
     if tool_id == "mailpit":
         return _install_mailpit(arch)
 

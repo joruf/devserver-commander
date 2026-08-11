@@ -1,15 +1,15 @@
 # DevServer Commander
 
-A desktop GUI to **start, stop and restart local development servers** — PHP built-in servers, Node.js apps, Mailpit, MailHog, or any custom command — from one window instead of juggling multiple terminal tabs.
+A desktop GUI to **start, stop and restart local development servers** — PHP built-in servers, Node.js apps, Mailpit, or any custom command — from one window instead of juggling multiple terminal tabs.
 
 ## Features
 
 - **Server list** — add, edit and remove projects with type, port, status, autostart, paths, CPU, and memory
 - **Server type column** — see at a glance whether a project is PHP, Node.js, or a custom command
-- **Server templates** — quick-start presets for PHP MVC, PHP, Node.js/npm, Vite, Python, MailHog, and Mailpit
+- **Server templates** — quick-start presets for PHP MVC, PHP, Node.js/npm, Vite, Python, and Mailpit
 - **PHP built-in server wizard** — pick installed PHP version, document root, router script, Xdebug and worker count
 - **Node.js server wizard** — configure `npm run`, `npx`, or `node` commands with optional `PORT` environment variable
-- **MailHog and Mailpit installer** — download and install mail testing tools with one click (no `sudo` required)
+- **Mailpit installer** — download and install the mail testing tool with one click (no `sudo` required)
 - **PHP package installer** — install missing PHP CLI versions via `apt` from the project dialog
 - **Save-time validation** — checks directories, binaries, npm scripts, ports, and router files before saving
 - **Custom directory picker** — browse project folders with an optional “show hidden files/folders” toggle
@@ -61,13 +61,11 @@ Configure npm, npx, or node commands with optional `PORT` environment variable s
 
 ![Node.js project dialog](docs/screenshots/project-dialog-node.png)
 
-### Add project — Mailpit / MailHog
+### Add project — Mailpit
 
-Use the Mailpit or MailHog template and install the binary directly from the dialog when it is missing.
+Use the Mailpit template and install the binary directly from the dialog when it is missing.
 
 ![Mailpit project dialog](docs/screenshots/project-dialog-mailpit.png)
-
-![MailHog project dialog](docs/screenshots/project-dialog-mailhog.png)
 
 ### Directory picker
 
@@ -175,7 +173,7 @@ devserver-commander/
 │   ├── server_types.py             # Detects whether a stored command is PHP, Node.js, or custom
 │   ├── systemd.py                  # Reads unit state and runs start/stop/restart with polkit authorization
 │   ├── service_catalog.py          # Closed catalog of supported database services and data directory detection
-│   ├── dev_tools.py                # One-click download/install helpers for MailHog and Mailpit
+│   ├── dev_tools.py                # One-click download/install helper for Mailpit
 │   ├── well_known_ports.py         # Names the service behind a port via curated table and /etc/services
 │   ├── stats.py                    # CPU and memory usage via /proc; port-to-PID lookup
 │   ├── notifications.py            # Desktop notifications via notify-send for events behind a hidden window
@@ -212,7 +210,6 @@ devserver-commander/
         ├── project-dialog-php.png  # Add project dialog with PHP template
         ├── project-dialog-node.png # Add project dialog with Node.js template
         ├── project-dialog-mailpit.png
-        ├── project-dialog-mailhog.png
         ├── directory-picker.png    # Directory chooser dialog
         └── preferences.png         # Preferences dialog
 ```
@@ -226,7 +223,7 @@ devserver-commander/
 | `~/.local/state/devserver-commander/logs/` | Per-server stdout/stderr log files |
 | `~/.local/state/devserver-commander/instance.lock` | Single-instance lock file while the app is running |
 | `~/.local/state/devserver-commander/control.sock` | Control socket used to raise the existing window on relaunch |
-| `~/.local/share/devserver-commander/bin/` | Downloaded MailHog and Mailpit binaries |
+| `~/.local/share/devserver-commander/bin/` | Downloaded Mailpit binary |
 | `.initialized` | Marker file in the project root; skips the first-run desktop shortcut prompt |
 
 ## Configuration
@@ -291,10 +288,9 @@ When adding a project, choose a template to pre-fill the dialog:
 | Node.js (npm run dev) | Node.js | 3000 |
 | Vite (npx) | Node.js | 5173 |
 | Python HTTP server | Custom | 8080 |
-| MailHog | Custom | 8025 |
 | Mailpit | Custom | 8025 |
 
-MailHog and Mailpit are installed to `~/.local/share/devserver-commander/bin/` when you click **Install...** in the project dialog.
+Mailpit is installed to `~/.local/share/devserver-commander/bin/` when you click **Install...** in the project dialog.
 
 ## Database services
 
@@ -401,7 +397,7 @@ configuration instead. Declining the offer still opens the normal server dialog.
 | Start into the tray manually | `./run.py --tray` |
 | Crash notifications / auto-restart | **Settings → Preferences...** |
 | Install PHP | In the project dialog: **Install...** next to the PHP version dropdown |
-| Install MailHog / Mailpit | In the project dialog: **Install...** next to the custom command field |
+| Install Mailpit | In the project dialog: **Install...** next to the custom command field |
 | Browse with hidden folders | **Browse...** in the project dialog, then enable the checkbox |
 
 Edit and Remove are disabled until a server is selected. Running servers can be edited; saving while a server is running asks whether to restart it. Remove still requires the server to be stopped first.

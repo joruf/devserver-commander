@@ -241,7 +241,6 @@ def generate_screenshots(outputs: Iterable[Path] | None = None) -> list[Path]:
         "project-dialog-php.png": _capture_project_dialog_php,
         "project-dialog-node.png": _capture_project_dialog_node,
         "project-dialog-mailpit.png": _capture_project_dialog_mailpit,
-        "project-dialog-mailhog.png": _capture_project_dialog_mailhog,
         "preferences.png": _capture_preferences,
         "directory-picker.png": _capture_directory_picker,
         "context-menu.png": _capture_context_menu,
@@ -300,16 +299,6 @@ def _capture_project_dialog_mailpit(output_path: Path) -> None:
     parent = _hidden_parent()
     try:
         dialog = open_project_dialog(parent, preset="Mailpit")
-        capture_window(dialog, output_path)
-        dialog.destroy()
-    finally:
-        parent.destroy()
-
-
-def _capture_project_dialog_mailhog(output_path: Path) -> None:
-    parent = _hidden_parent()
-    try:
-        dialog = open_project_dialog(parent, preset="MailHog")
         capture_window(dialog, output_path)
         dialog.destroy()
     finally:

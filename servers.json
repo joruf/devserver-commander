@@ -41,7 +41,7 @@
       "env": {
         "XDEBUG_SESSION": "1"
       },
-      "autostart": true
+      "autostart": false
     },
     {
       "name": "Pebot",
@@ -54,9 +54,9 @@
       "autostart": true
     },
     {
-      "name": "MailHog",
-      "directory": "/home/joruf/Dokumente",
-      "command": "./mailhog",
+      "name": "Mailpit",
+      "directory": "/home/joruf/.local/share/mailpit",
+      "command": "/home/joruf/.local/share/devserver-commander/bin/mailpit --listen 0.0.0.0:{port} --smtp 0.0.0.0:1025 --database /home/joruf/.local/share/mailpit/mailpit.db --smtp-auth-accept-any --smtp-auth-allow-insecure",
       "port": 8025,
       "env": {},
       "autostart": true
@@ -67,7 +67,7 @@
       "command": "node server.js",
       "port": 4321,
       "env": {},
-      "autostart": true
+      "autostart": false
     }
   ],
   "services": [

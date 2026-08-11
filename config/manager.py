@@ -47,9 +47,9 @@ def default_projects() -> List[ServerProject]:
             env=dict(common_env),
         ),
         ServerProject(
-            name="MailHog",
+            name="Mailpit",
             directory=docs,
-            command=default_command_for_tool("mailhog"),
+            command=default_command_for_tool("mailpit"),
             port=8025,
             env={},
         ),

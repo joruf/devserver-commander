@@ -36,7 +36,7 @@ MYSQL_PORT = ScannedPort(port=3306, address="127.0.0.1", pid=None, process_name=
 # An ephemeral port of an own process: named by ss, but no well-known service.
 EPHEMERAL_PORT = ScannedPort(port=45678, address="127.0.0.1", pid=4321, process_name="code")
 # A port both sources know about.
-MAILPIT_PORT = ScannedPort(port=8025, address="127.0.0.1", pid=1435, process_name="mailhog")
+MAILPIT_PORT = ScannedPort(port=8025, address="127.0.0.1", pid=1435, process_name="mailpit")
 
 
 @unittest.skipUnless(TK_AVAILABLE, "Tk display is not available")
@@ -104,7 +104,7 @@ class ServiceColumnTests(unittest.TestCase):
 
     def test_names_a_known_development_tool_port(self) -> None:
         values = self._row_for_port(8025)
-        self.assertEqual(values[2], "MailHog / Mailpit (web UI)")
+        self.assertEqual(values[2], "Mailpit (web UI)")
 
     def test_leaves_an_ephemeral_port_unnamed(self) -> None:
         """An arbitrary high port has no service name to report honestly."""
@@ -121,7 +121,7 @@ class ServiceColumnTests(unittest.TestCase):
     def test_status_line_reports_a_visible_process(self) -> None:
         self._select_port(8025)
         status = self.dialog.status_var.get()
-        self.assertIn("mailhog", status)
+        self.assertIn("mailpit", status)
         self.assertIn("1435", status)
 
     def test_status_line_returns_to_the_summary_without_selection(self) -> None:

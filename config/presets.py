@@ -69,14 +69,6 @@ SERVER_PRESETS: List[ServerPreset] = [
         command="python3 -m http.server {port}",
     ),
     ServerPreset(
-        label="MailHog",
-        server_type="custom",
-        suggested_name="MailHog",
-        port=8025,
-        command="",
-        dev_tool_id="mailhog",
-    ),
-    ServerPreset(
         label="Mailpit",
         server_type="custom",
         suggested_name="Mailpit",
