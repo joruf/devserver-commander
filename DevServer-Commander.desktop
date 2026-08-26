@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DevServer Commander
+GenericName=Development server control
+Comment=Start, stop and restart local development servers
+Comment[de]=Lokale Entwicklungsserver starten, stoppen und neu starten
+# %k is this .desktop file, so ./run.py is always the one in the same folder.
+Exec=/bin/bash -c "cd \\$(dirname \\$(readlink -f \\$0)) && exec python3 ./run.py" %k
+Icon=devserver-commander
+Terminal=false
+Categories=Utility;Development;
+Keywords=server;PHP;Node;Mailpit;port;localhost;
+StartupNotify=false
