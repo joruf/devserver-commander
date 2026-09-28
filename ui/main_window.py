@@ -14,7 +14,7 @@ from config import AppSettingsManager, ConfigManager
 from config.app_settings import CRASH_RESTART_DELAYS_SECONDS, CRASH_RESTART_STABLE_SECONDS
 from config.validation import make_unique_project_name
 from models import ServerProject, SystemService
-from paths import AUTOSTART_FILE, ICON_FILE
+from paths import AUTOSTART_FILE, CONFIG_FILE, ICON_FILE
 from services.php import (
     extract_docroot_from_command,
     extract_php_binary_from_command,
@@ -38,6 +38,7 @@ from ui.desktop_setup import (
     maybe_prompt_desktop_setup,
     set_login_autostart,
 )
+from ui.config_file_dialog import ConfigFileDialog
 from ui.port_scanner_dialog import PortScannerDialog
 from ui.preferences_dialog import PreferencesDialog
 from ui.project_dialog import ProjectDialog
@@ -362,6 +363,10 @@ class MainWindow(tk.Tk):
             toolbar, text="Port Scanner...", command=self._open_port_scanner
         )
         self.btn_port_scanner.pack(side="left", padx=2)
+        self.btn_edit_config = ttk.Button(
+            toolbar, text="Edit Config...", command=self._open_config_file_editor
+        )
+        self.btn_edit_config.pack(side="left", padx=2)
         self._attach_toolbar_tooltips()
 
         paned = ttk.Panedwindow(self, orient="vertical")
@@ -534,6 +539,12 @@ class MainWindow(tk.Tk):
                 self.btn_port_scanner,
                 "List TCP ports that are listening but not in this list yet, "
                 "together with the service behind each port.",
+            ),
+            (
+                "edit_config",
+                self.btn_edit_config,
+                f"Open and edit the complete configuration file ({CONFIG_FILE.name}) "
+                "as raw JSON. Saving reloads the server and service list.",
             ),
         )
 
@@ -2474,6 +2485,19 @@ class MainWindow(tk.Tk):
         self._set_status(
             "Preferences saved. CPU and memory values refresh every "
             f"{self.app_settings.stats_refresh_interval_seconds} seconds."
+        )
+
+    def _open_config_file_editor(self) -> None:
+        dialog = ConfigFileDialog(self)
+        self.wait_window(dialog)
+        if not dialog.saved:
+            return
+
+        reloaded = self._reload_projects_from_disk(force=True)
+        self._refresh_tree_if_changed(force=True)
+        self._refresh_log_tail(force_full=True)
+        self._set_status(
+            "Configuration file saved and reloaded." if reloaded else "Configuration file saved."
         )
 
     def _apply_login_autostart(self, enabled: Optional[bool]) -> None:

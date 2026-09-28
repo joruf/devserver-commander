@@ -8,6 +8,7 @@ from typing import Optional
 NOTIFY_BINARY = "notify-send"
 APP_NAME = "DevServer Commander"
 NOTIFY_TIMEOUT_SECONDS = 5
+NOTIFY_EXPIRE_MS = 5000
 
 
 def notifications_available() -> bool:
@@ -38,7 +39,15 @@ def send_desktop_notification(
     if binary is None:
         return False
 
-    command = [binary, "--app-name", APP_NAME, "--urgency", urgency]
+    command = [
+        binary,
+        "--app-name",
+        APP_NAME,
+        "--urgency",
+        urgency,
+        "--expire-time",
+        str(NOTIFY_EXPIRE_MS),
+    ]
     if icon is not None and icon.is_file():
         command += ["--icon", str(icon)]
     command += [title, message]

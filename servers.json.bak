@@ -72,12 +72,10 @@
     {
       "name": "emis-gruppe.de",
       "directory": "/home/joruf/Dokumente/emis-gruppe-de/joomla",
-      "command": "/usr/bin/php8.4 -d max_input_vars=5000 -d max_input_time=120 -d xdebug.mode=off -S localhost:{port} -t .",
+      "command": "/usr/bin/php8.5 -S localhost:{port} -t .",
       "port": 8006,
-      "env": {
-        "PHP_CLI_SERVER_WORKERS": "2"
-      },
-      "autostart": true
+      "env": {},
+      "autostart": false
     }
   ],
   "services": [
