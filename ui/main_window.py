@@ -32,6 +32,7 @@ from services.cli_args import parse_args
 from services.instance_ipc import InstanceControlServer
 from services.single_instance import enforce_single_instance
 from services.stats import format_cpu_percent, format_memory_bytes, get_process_stats
+import version
 from ui.desktop_setup import (
     install_desktop_shortcut,
     is_login_autostart_enabled,
@@ -2652,7 +2653,8 @@ class MainWindow(tk.Tk):
     def _show_about(self) -> None:
         messagebox.showinfo(
             "About DevServer Commander",
-            "DevServer Commander\n\n"
+            "DevServer Commander\n"
+            f"Version {version.label()}\n\n"
             "Start, stop and restart local development servers "
             "defined in your own project list.",
         )

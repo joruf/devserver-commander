@@ -4,6 +4,9 @@ import argparse
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
+import paths
+import version
+
 TRAY_ARGUMENT = "--tray"
 TRAY_ARGUMENT_ALIASES = ("--minimized", "--hidden")
 
@@ -22,7 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     :return: Parser accepting the supported launch options
     """
     parser = argparse.ArgumentParser(
-        prog="run.py",
+        # The single-file executable is started by its own name, not through run.py.
+        prog=paths.executable().name if paths.IS_FROZEN else "run.py",
         description="Start, stop and restart local development servers.",
     )
     parser.add_argument(
@@ -34,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Start without showing the main window; the application only appears "
             "in the system tray. Used by the login autostart entry."
         ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"DevServer Commander {version.label()}",
+        help="Print the version derived from the commit history and exit.",
     )
     return parser
 

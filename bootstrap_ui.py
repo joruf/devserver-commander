@@ -234,6 +234,13 @@ def _fetch(progress: Progress, need: Need) -> bool:
     """
 
     if need.pip:
+        if getattr(sys, "frozen", False):
+            # In the single-file executable sys.executable is the program itself, so `-m pip`
+            # would start it again; its Python packages are built in or not there at all.
+            progress.write("The executable cannot install Python packages.")
+
+            return False
+
         return _run(progress, [sys.executable, "-m", "pip", "install", "--user", *need.pip])
 
     command = _system_install(need.packages)

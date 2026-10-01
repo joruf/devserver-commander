@@ -3,3 +3,8 @@ __pycache__/
 *.py[cod]
 .initialized
 servers.json
+# Version derived from the history by version.py, never checked in
+/VERSION
+# Output of build-exe.py
+/build/
+/dist/

@@ -1,12 +1,14 @@
 """Desktop entry helpers: desktop shortcut creation and login autostart."""
 
 import shlex
+import shutil
 import stat
 from pathlib import Path
 from typing import Sequence
 
 from tkinter import messagebox
 
+import paths
 from paths import (
     AUTOSTART_FILE,
     DESKTOP_FILENAME,
@@ -59,8 +61,32 @@ def build_exec_line(exec_args: Sequence[str] = ()) -> str:
     :param exec_args: Extra command-line arguments appended to the launch command
     :return: Complete Exec line without a trailing newline
     """
-    command = ["python3", str(MAIN_SCRIPT), *exec_args]
+    if paths.IS_FROZEN:
+        # The single-file executable is the whole program; there is no script to hand python3.
+        command = [str(paths.executable()), *exec_args]
+    else:
+        command = ["python3", str(MAIN_SCRIPT), *exec_args]
     return "Exec=" + " ".join(shlex.quote(part) for part in command)
+
+
+def launcher_icon() -> Path:
+    """
+    Return an icon path a launcher can still read after this process ends.
+
+    The executable unpacks its icon into a temporary directory that is deleted on
+    exit, so a copy is kept in the per-user data directory.
+
+    :return: The icon to reference in ``Icon=``
+    """
+    if not paths.IS_FROZEN:
+        return ICON_FILE
+    kept = paths.USER_DATA_DIR / ICON_FILE.name
+    try:
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(str(ICON_FILE), str(kept))
+    except OSError:
+        pass
+    return kept
 
 
 def build_desktop_entry_content(exec_args: Sequence[str] = ()) -> str:
@@ -71,7 +97,8 @@ def build_desktop_entry_content(exec_args: Sequence[str] = ()) -> str:
     :return: Contents of a complete .desktop file
     """
     exec_line = f"{build_exec_line(exec_args)}\n"
-    icon_line = f"Icon={ICON_FILE}\n" if ICON_FILE.is_file() else "Icon=utilities-terminal\n"
+    icon = launcher_icon()
+    icon_line = f"Icon={icon}\n" if icon.is_file() else "Icon=utilities-terminal\n"
     if not DESKTOP_TEMPLATE.is_file():
         return (
             "[Desktop Entry]\n"

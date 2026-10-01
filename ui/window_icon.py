@@ -2,9 +2,7 @@
 
 import tkinter as tk
 
-from paths import RESOURCES_DIR
-
-ICON_FILE = RESOURCES_DIR / "devserver-commander.png"
+from paths import ICON_FILE
 
 
 def apply_window_icon(window: tk.Misc) -> None:

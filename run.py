@@ -5,6 +5,8 @@
 
 import sys
 
+import paths
+
 # --- what this application needs ----------------------------------------------------------------
 # Checked before anything below is imported. Whatever is missing is installed in a window that
 # shows the work as it happens; see bootstrap_ui.py. `--setup` opens that window even when nothing
@@ -21,9 +23,26 @@ NEEDS = (
          note="links do not open in the browser"),
 )
 
+# The single-file executable carries PyGObject itself; only the external programs are the
+# system's business there.
+if paths.IS_FROZEN:
+    NEEDS = tuple(need for need in NEEDS if need.module != "gi")
+
 # Only when the application is actually being started. Importing this module — which the test
 # suite does — should not check anything, let alone put an installer window on screen.
 if __name__ == "__main__":
+    # Answered before anything else, and before any GUI toolkit is imported, so it also works
+    # headless — build-exe.py starts the finished executable this way.
+    if "--version" in sys.argv[1:]:
+        import version
+
+        print(f"DevServer Commander {version.label()}")
+        raise SystemExit(0)
+
+    # Before anything spawns: children of the executable must not inherit its bundled libraries.
+    paths.use_system_environment_for_children()
+    paths.migrate_legacy_user_data()
+
     # Taken out of the arguments once it has been read, so the application's own parser does
     # not trip over a flag that was never meant for it.
     _SETUP = "--setup" in sys.argv

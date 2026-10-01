@@ -108,6 +108,7 @@ The installer checks Python, tkinter, and `fuser`, and sets the executable bit o
 | Option | Effect |
 |--------|--------|
 | `--tray` (aliases: `--minimized`, `--hidden`) | Start without opening the main window — the app is only present in the system tray. Autostart-flagged servers still start, and the window opens from the tray icon or by launching the app again. |
+| `--version` | Print the version (see [Versioning](#versioning)) and exit, without opening a window |
 | `-h`, `--help` | Show all available options |
 
 ### Start on login
@@ -140,6 +141,70 @@ notifications and restarts stay silent about servers you started outside the app
 
 The tray tooltip shows how many of the configured servers are currently running.
 
+### Single-file executable (no Python needed)
+
+DevServer Commander can also be built as one executable file that carries Python, tkinter and the
+GTK bindings for the tray icon. One script does the whole build:
+
+```bash
+./build-exe.py          # -> dist/devserver-commander-linux-x86_64-<version>-build<build>
+```
+
+The file name carries the version, e.g. `devserver-commander-linux-x86_64-0.8.0-build24`.
+
+- **Linux only.** The program relies on `fcntl` locks, a Unix control socket, `/proc`, `fuser`,
+  GTK and systemd, so there is no Windows or macOS file. A Windows version would need a port, not
+  just a build.
+- **The file runs on systems with the same or a newer glibc as the build machine.** Build on the
+  oldest system you want to support. The release workflow uses Ubuntu 22.04.
+- **Build machine:** `python3-venv`, `python3-tk`, `python3-gi` and `gir1.2-gtk-3.0`. The system
+  Python is used, because only it sees PyGObject; `build-exe.py` links it into its private build
+  environment in `build/exe/`.
+- `--clean` rebuilds that build environment, `--keep-env` reuses it without updating.
+- After downloading, make the file executable once: `chmod +x devserver-commander-linux-*`.
+- The desktop shortcut and the login autostart created from the executable start the executable
+  itself; its icon is copied to `~/.local/share/devserver-commander/`.
+
+What stays outside the file, on purpose: everything the program starts or controls — PHP, Node.js,
+Mailpit (downloaded as before), `fuser`, `ss`, `systemctl`/`pkexec`, `notify-send`, `xdg-open` and the
+terminal emulators. The startup check still offers to install the missing system tools.
+
+Every push to `main` runs `.github/workflows/release-exe.yml`. It builds the file on GitHub
+(Ubuntu 22.04) and publishes it as the release `v<version>-build<build>`; the build number changes
+with every commit, so every push gets its own release. DevServer Commander has no updater: download
+a newer file to update.
+
+## Versioning
+
+The number is never typed, it is derived from the commit history by `version.py`:
+
+| part | meaning |
+|---|---|
+| major | raised by hand, only for a release that justifies it |
+| minor | commits that added a new module under `ui/` or `services/` (`__init__.py` aside) — a new capability |
+| patch | commits since that last happened |
+| build | total number of commits |
+
+The first commit with code brought the whole application and counts as the first new module, so
+the first working state is `0.1.x`. Renamed modules do not count. **Help → About** and `--version`
+show the full form together with the short hash and the date of the last commit, so a number in a
+bug report leads back to an exact commit.
+
+The derived value is cached in a `VERSION` file, which is **not** checked in — it is derived, and a
+checked-in copy would be stale one commit later. The commit hook rewrites it, so an installation
+copied without `.git` still knows its version; the single-file executable carries the file written by
+`build-exe.py`. Activate the hook once per checkout:
+
+```bash
+git config core.hooksPath .githooks
+python3 version.py            # prints the current version
+python3 version.py --write    # what the hook does
+```
+
+Set `DEVSERVER_COMMANDER_VERSION` to pin a value for a test or a one-off run. Without a history,
+without a `VERSION` file and without that variable the version reads `unknown` — an invented `0.0.0`
+would look real and send bug reports the wrong way.
+
 ## Project structure
 
 ```
@@ -147,7 +212,10 @@ devserver-commander/
 ├── run.py                          # Application entry point; starts the GUI
 ├── installer.py                    # Checks Python, tkinter, fuser, and GTK3; sets executable permissions
 ├── paths.py                        # Central path constants for config, icons, desktop files, and resources
-├── servers.json                    # User-defined server list persisted as JSON
+├── version.py                      # Derives the version from the commit history; no number is typed
+├── build-exe.py                    # Builds the single-file executable with PyInstaller
+├── .githooks/post-commit           # Refreshes the VERSION file after every commit
+├── servers.json                    # Former location of the server list; copied once to ~/.config/devserver-commander/
 ├── README.md                       # Project documentation
 ├── LICENSE                         # License terms
 ├── .gitignore                      # Git ignore rules for local and generated files
@@ -218,17 +286,24 @@ devserver-commander/
 
 | Path | Purpose |
 |------|---------|
+| `~/.config/devserver-commander/servers.json` | The server and service list (see [Configuration](#configuration)) |
+| `~/.config/devserver-commander/.initialized` | Marker file; skips the first-run desktop shortcut prompt |
 | `~/.config/devserver-commander/settings.json` | Persisted application preferences |
 | `~/.config/autostart/devserver-commander.desktop` | Login autostart entry; launches the app with `--tray` (only present while "Start on login" is enabled) |
 | `~/.local/state/devserver-commander/logs/` | Per-server stdout/stderr log files |
 | `~/.local/state/devserver-commander/instance.lock` | Single-instance lock file while the app is running |
 | `~/.local/state/devserver-commander/control.sock` | Control socket used to raise the existing window on relaunch |
 | `~/.local/share/devserver-commander/bin/` | Downloaded Mailpit binary |
-| `.initialized` | Marker file in the project root; skips the first-run desktop shortcut prompt |
+| `~/.local/share/devserver-commander/devserver-commander.png` | Launcher icon, only written by the single-file executable |
+| `VERSION` | Version derived from the history, in the project root; written by `version.py` and the commit hook |
 
 ## Configuration
 
-All servers are stored in `servers.json` in the project directory:
+All servers are stored in `~/.config/devserver-commander/servers.json` (`$XDG_CONFIG_HOME` is
+honoured), so the same list serves a checkout and the single-file executable. Older versions kept the
+file in the project directory: on the first start of a checkout without the new file, `servers.json`
+and `.initialized` are copied from there once; the old files are left in place.
+
 
 ```json
 {

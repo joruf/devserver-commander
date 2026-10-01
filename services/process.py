@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from models import ServerProject
+from paths import child_environment
 from services.port_info import describe_port_usage
 from services.ports import is_port_open
 from services.stats import pid_for_port
@@ -202,7 +203,8 @@ class ServerProcess:
 
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_file = log_path_for(self.project)
-        env = dict(os.environ)
+        # Without the libraries the single-file executable carries; a plain copy otherwise.
+        env = child_environment()
         env.update(self.project.build_env())
 
         command = self.project.build_command()

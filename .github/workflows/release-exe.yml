@@ -1,0 +1,78 @@
+name: Executable
+
+# Builds the single-file executable with build-exe.py and publishes it as a
+# GitHub release, tag v<version>-build<build>.
+#
+# The version is derived from the commit history (version.py), so the build
+# number changes with every commit: every push to main gets its own release.
+# DevServer Commander runs on Linux only, so there is one file, built on the
+# oldest supported Ubuntu.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ubuntu-22.04
+    # The oldest supported Ubuntu: the file runs on every system with the same
+    # or a newer glibc, never on an older one.
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # The whole history: the version is counted from it.
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv python3-tk python3-gi gir1.2-gtk-3.0
+
+      - name: Write the VERSION file
+        run: /usr/bin/python3 version.py --write
+
+      # The system Python, not setup-python: only it can see PyGObject, which
+      # the tray icon needs.
+      - name: Build
+        run: /usr/bin/python3 build-exe.py
+
+      - name: Keep the executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: exe-linux
+          path: |
+            dist/devserver-commander-*
+            VERSION
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect the executable
+        uses: actions/download-artifact@v4
+        with:
+          name: exe-linux
+          path: out
+
+      - name: Create or refresh the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          read -r VERSION BUILD _ < out/VERSION
+          TAG="v${VERSION}-build${BUILD}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/dist/devserver-commander-* --clobber
+          else
+            gh release create "$TAG" out/dist/devserver-commander-* \
+              --target "$GITHUB_SHA" \
+              --title "DevServer Commander ${VERSION} (${BUILD})" \
+              --notes "Single-file executable for Linux built by build-exe.py. Make the file executable (chmod +x) and start it. PHP, Node.js, fuser, systemctl and notify-send stay the system's."
+          fi
